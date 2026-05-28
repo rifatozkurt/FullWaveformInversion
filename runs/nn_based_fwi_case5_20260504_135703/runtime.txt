@@ -1,0 +1,3 @@
+method: nn_based_fwi
+case_id: 5
+runtime_seconds: 108.168825

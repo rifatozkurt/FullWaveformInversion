@@ -1,0 +1,2874 @@
+Published as a conference paper at ICLR 2026
+
+
+
+
+U NVEILING THE M ECHANISM OF C ONTINUOUS R EP -
+RESENTATION F ULL -WAVEFORM I NVERSION : A WAVE
+BASED N EURAL TANGENT K ERNEL F RAMEWORK
+
+Ruihua Chen1 , Yisi Luo1,† , Bangyu Wu1,† , Deyu Meng1,2
+1
+School of Mathematics and Statistics, Xi’an Jiaotong University, Xi’an, Shaanxi, China
+2
+Macao Institute of Systems Engineering, Macau University of Science and Technology, Taipa, Macao
+Ruihua.Chen@stu.xjtu.edu.cn, yisiluo1221@foxmail.com,
+{bangyuwu, dymeng}@mail.xjtu.edu.cn
+
+                                            A BSTRACT
+         Full-waveform inversion (FWI) estimates physical parameters in the wave equa-
+         tion from limited measurements and has been widely applied in geophysical ex-
+         ploration, medical imaging, and non-destructive testing. Conventional FWI meth-
+         ods are limited by their notorious sensitivity to the accuracy of the initial models.
+         Recent progress in continuous representation FWI (CR-FWI) demonstrates that
+         representing parameter models with a coordinate-based neural network, such as
+         implicit neural representation (INR), can mitigate the dependence on initial mod-
+         els. However, its underlying mechanism remains unclear, and INR-based FWI
+         shows slower high-frequency convergence. In this work, we investigate the gen-
+         eral CR-FWI framework and develop a unified theoretical understanding by ex-
+         tending the neural tangent kernel (NTK) for FWI to establish a wave-based NTK
+         framework. Unlike standard NTK, our analysis reveals that wave-based NTK is
+         not constant, both at initialization and during training, due to the inherent nonlin-
+         earity of FWI. We further show that the eigenvalue decay behavior of the wave-
+         based NTK can explain why CR-FWI alleviates the dependency on initial models
+         and shows slower high-frequency convergence. Building on these insights, we
+         propose several CR-FWI methods with tailored eigenvalue decay properties for
+         FWI, including a novel hybrid representation combining INR and multi-resolution
+         grid (termed IG-FWI) that achieves a more balanced trade-off between robustness
+         and high-frequency convergence rate. Applications in geophysical exploration on
+         Marmousi, 2D SEG/EAGE Salt and Overthrust, 2004 BP model, and the more
+         realistic 2014 Chevron models show the superior performance of our proposed
+         methods compared to conventional FWI and existing INR-based FWI methods.
+
+
+
+
+Figure 1: (a) The acquisition process of observed seismic data obtained from the receivers placed on
+the surface; (b) FWI is a nonlinear inverse problem that inverts the subsurface models from observed
+seismic data. The CR-FWI framework synthesizes seismic data by solving the wave equation 1,
+where the model m(x) is represented by a coordinate-based neural network mθ (x), e.g., INR.
+
+1   I NTRODUCTION
+Full-waveform inversion (FWI) is an ill-posed and partial differential equation (PDE)-constrained
+(i.e., wave equation) nonlinear inversion problem in seismic imaging, which estimates subsurface
+properties (e.g., velocity, impedance, or density models) by iteratively minimizing the discrepancy
+between observed seismic data (i.e., seismograms) and synthetic seismic data (i.e., the solution
+of the wave equation) (Virieux & Operto, 2009). Since having a theoretically highest resolution,
+    † Corresponding authors.
+
+
+                                                  1
+Published as a conference paper at ICLR 2026
+
+
+                                                                                                            genius
+
+                                                                                                            mathematical
+
+                                                                                                            idea
+
+
+
+                                                                                                            "
+
+
+
+
+Figure 2: (a) Inversion results using conventional FWI (i.e., Multiscale ADFWI (Liu et al., 2025a)),
+existing INR-based FWI (i.e., IFWI (Sun et al., 2023a)), and our proposed IG-FWI methods with
+smooth (after 500 epochs) and constant initial models (after 1500 epochs) on the 2004 BP model;
+(b) Eigenvalue spectrum comparison of wave-based NTK using different FWI methods.
+
+FWI has been widely applied across multiple domains, including geophysical subsurface explo-
+ration (Tromp, 2020), medical imaging (Guasch et al., 2020), planetary imaging (Hanasoge, 2014),
+and non-destructive testing (Nguyen & Modrak, 2018). However, the nonlinearity of the inversion
+problem, complex geological structures (e.g., salt bodies and faults), and practical limitations in
+seismic data acquisition (e.g., sparse sampling, missing low-frequency components, and noise in-
+terference) may pose significant challenges to achieving stable convergence towards high precision
+inversion results in practical applications (Virieux et al., 2017). An accurate and smooth initial veloc-
+ity model, including abundant low-frequency information, can be used to mitigate the ill-posedness
+and cycle-skipping (i.e., half-cycle waveform misfit causing inversion failure) (Chen et al., 2022).
+Still, obtaining such an accurate initial model remains a significant challenge due to the complex
+near-surface conditions and heterogeneous subsurface layers (Yang et al., 2025).
+To alleviate the aforementioned challenges, previous studies have explored various approaches, in-
+cluding initial model generation (Chen et al., 2016; Sun et al., 2017), misfit function modification
+(Yang & Ma, 2023), regularization design (Yan & Wang, 2018), advanced optimization algorithms
+(Sun & Alkhalifah, 2020), and multiscale inversion strategies (Fichtner et al., 2013). However, most
+of these conventional FWI methods are still sensitive to initial model accuracy and seismic data qual-
+ity. Recently, Sun et al. (2023a) and Yang & Ma (2025) utilized a specific coordinate-based neural
+network, i.e., implicit neural representation (INR) (Mildenhall et al., 2021; Sitzmann et al., 2020) to
+reparameterize the velocity model as a continuous function (see Fig. 1). This novel continuous rep-
+resentation FWI (CR-FWI) framework can enhance the robustness w.r.t. the initial model accuracy
+and seismic data quality. Previous studies (Sun et al., 2023a; Yang & Ma, 2025) have identified two
+main distinctions in inversion performance between conventional FWI and CR-FWI methods:
+• Robustness: CR-FWI can recover satisfactory inversion results even with a constant initial model
+  and poor seismic data quality, whereas conventional FWI often fails under such conditions.
+• Convergence: CR-FWI exhibits slower convergence rates, particularly in the high-frequency
+  components, and requires a larger number of iterations to achieve high-precision inversion results.
+  In contrast, conventional FWI converges more rapidly when smooth initial models are available.
+We demonstrate this discrepancy in the 2004 BP model, as shown in Fig. 2 (a). In light of the above
+distinctions, we propose two natural and intriguing questions: (i) Can a unified theoretical frame-
+work be established to explain the differences in robustness and convergence between conventional
+FWI and CR-FWI? (ii) Is there a continuous representation that achieves a balanced trade-off be-
+tween robustness and convergence? Positive answers to these questions are provided in this study.
+
+
+1.1   O UR WORK AND CONTRIBUTIONS
+In this work, we dive into the general continuous representation FWI framework and establish a
+unified theoretical foundation for both conventional FWI and CR-FWI. This is accomplished by
+introducing and analyzing a novel neural tangent kernel (NTK) tailored for FWI, i.e., the wave ker-
+nel for conventional FWI in Proposition 2.1 and the wave-based NTK for CR-FWI in Proposition
+3.1. The eigenvalue of these NTKs provides a theoretical basis for understanding the convergence
+behavior and robustness of conventional FWI and CR-FWI. Our analysis leads to two key insights:
+• Insight I: Distinct from standard NTK, both the wave kernel and wave-based NTK exhibit dy-
+  namic behavior during training (see Theorem 4.1) due to the nonlinearity of the inversion problem.
+• Insight II: The eigenvalue decay of wave-based NTK is not slower than the wave kernel (see
+  Theorem 4.2) due to the smooth kernel induced by the continuous representation (see Fig. 2 (b)).
+
+
+                                                   2
+Published as a conference paper at ICLR 2026
+
+
+
+
+The first insight establishes a dynamic analytical foundation for the wave-based NTK, providing a
+way for future theoretical research into NTK for PDE-constrained nonlinear inverse problems using
+stochastic analysis (Oksendal, 2013). Especially, under the quasi-static assumption, the wave-based
+NTK can be locally linearized, thereby enabling analysis of local convergence and optimization be-
+havior based on its eigenvalue decay rate. The second insight reveals that the training dynamics of
+FWI can be decomposed along the directions defined by the eigenvectors of the wave-based NTK,
+each associated with a distinct convergence rate determined by the corresponding eigenvalues (Jacot
+et al., 2018). The rapid eigenvalue decay of wave-based NTK reveals that CR-FWI can inherently
+achieve effective multiscale inversion from low frequencies to high frequencies adaptively, i.e., fre-
+quency principle (Xu et al., 2025) or spectral bias (Cao et al., 2019). This property explains why
+CR-FWI reduces reliance on initial models and exhibits slower high-frequency convergence.
+Motivated by the connection between the eigenvalue decay and its optimization behavior, we intro-
+duce several novel CR-FWI methods by incorporating low-rank tensor function representation (Luo
+et al., 2023) (termed LR-FWI) and multi-grid parametric encoding (Müller et al., 2022) (termed
+MPE-FWI). By encoding the inherent smoothness and low-rank properties of parameter models,
+LR-FWI improves inversion robustness and accelerates the convergence of high-frequency compo-
+nents due to an appropriate eigenvalue decay, as empirically verified in our numerical experiments
+(see Fig. 5 (c)). Moreover, the multigrid parametric encoding has been proven to yield a better eigen-
+value spectrum distribution in its NTK (Audia et al., 2025). Hence, compared to INR-based FWI
+(Sun et al., 2023a; Yang & Ma, 2025), the proposed MPE-FWI method exhibits a slower eigenvalue
+decay (see Fig. 2 (b) and Theorem 5.1), which facilitates faster convergence of high-frequency com-
+ponents and leads to higher inversion accuracy (see Tab. 5) using smooth initial models. However,
+this gain in convergence speed and precision comes at the cost of reduced robustness. To inherit
+the robustness of INR-based FWI and the convergence benefits of MPE-FWI, we further propose a
+novel hybrid representation integrating INR with multi-resolution grids for FWI (termed IG-FWI,
+see Fig. 4). This method induces a suitable eigenvalue decay tailored for FWI (see Theorem 5.2 and
+Fig. 2 (b)), thereby achieving a trade-off between robustness and convergence (see Fig. 2 (a)).
+To our knowledge, this is the first work that analyzes the FWI problem from the NTK perspective and
+utilizes multigrid parametric encoding for FWI. In summary, our main contributions lie in threefold:
+• Theory: We develop a unified wave-based NTK framework for conventional FWI and CR-FWI.
+  The eigenvalue analysis explains why CR-FWI reduces reliance on initial models and exhibits
+  slower high-frequency convergence, with numerical tests confirming these insights (see Fig. 5).
+• Method: Inspired by the eigenvalue decay analysis, we propose a novel integrated representation
+  combining INR and multi-grid for FWI. This method achieves a tailored eigenvalue decay that is
+  more suitable for FWI, leading to a better robustness-convergence trade-off (see Figs. 3 and 4).
+• Application: We extensively evaluate our methods under challenging scenarios, including inac-
+  curate initial models, sparse sampling, seismic data with missing low frequencies and noise inter-
+  ference, various benchmark datasets (i.e., Marmousi, SEG/EAGE Salt and Overthrust, and 2004
+  BP models), and more realistic 2014 Chevron blind data compared to conventional and existing
+  CR-FWI methods. Inversion results show consistently superior performance (see Fig. 6).
+A comprehensive review and discussion of related work (e.g., including conventional FWI, neural
+representation-based FWI, and NTK theory) is provided in Appendix A.
+
+2   F ULL WAVEFORM I NVERSION AND WAVE K ERNEL
+Let U and T represent the spatial and temporal domains, respectively. For x ∈ U and t ∈ T , FWI
+                                                                                           Ns
+aims to estimate the velocity model m(x) from the observed seismic data {uD       j (x, t)}j=1 , where
+uD
+ j ≜ O ◦ uj . Here, O denotes a linear observation operator, and uj (x, t) corresponds to the full
+wavefield data with source wavelet function sj (x, t). Mathematically, the velocity model and the full
+wavefield data are governed by the wave equation (Engquist & Yang, 2022) expressed as follows:
+                               ∂ 2 uj (x,t)
+                      
+                      m(x) ∂t2
+                                           − ∇2 uj (x, t) = sj (x, t),   x ∈ U, t ∈ T,
+                                             ∂uj
+                        uj (x, 0) = 0,           (x, 0) = 0,              x ∈ U,                   (1)
+                                             ∂t
+                        ∇uj (x, t) · n = 0,                               x ∈ U, t ∈ T,
+                      
+
+where n is the unit outward normal to the boundary. This acoustic wave equation can be computed
+numerically via finite difference (Sun et al., 2020) (see Appendix B.3). Define the forward operator
+
+
+                                                       3
+Published as a conference paper at ICLR 2026
+
+
+
+
+G[·] : m 7→ uD ≜ [uD       D         D
+                      1 , u2 , ..., uNs ] and denote D as the sampling space domain. FWI aims to
+recover the true subsurface model m† by minimizing the misfit function between measurements
+uD          †                                      D
+  obs ≜ G[m ] and PDE-simulated seismic data usyn ≜ G[m] (Virieux & Operto, 2009), i.e.,
+                                                                 
+                                      1 D               2
+                  min       J (m) ≜     usyn (m) − uD
+                                                    obs             , s.t. uD
+                                                                            syn (m) = G[m],               (2)
+                  m∈A                 2                 L2 (D×T )
+
+where A is admissible set of velocity models and J is a misfit functional. In the continuous-time
+limit (i.e., as the learning rate tends to zero), this gradient flow of velocity model m is described by
+                                  ∂m    δJ         δG
+                                     =−    [m] = −    [m] · uD      D 
+                                                             syn − uobs ,                                 (3)
+                                  ∂τ    δm         δm
+where τ is a pseudo-time, δJ /δm denotes the Fréchet derivative of the misfit functional J w.r.t. the
+parameter model m, and δG/δm is the sensitivity kernel operator. Applying the chain rule, we prove
+that the evolution of the wavefield during training is characterized by the following proposition.
+Proposition 2.1 (Evolution of wavefield in FWI). Consider the loss function in equation 2 and the
+gradient flow in equation 3, the synthetic data uDsyn evolves according to the following equation:
+
+                  ∂uD
+                    syn (x, t)
+                                      Z Z
+                                                Θwave (x, t), (x′ , t′ ); m · uD      D  ′    ′
+                                                                           
+                               =−                                              syn − uobs dt dx ,         (4)
+                      ∂τ               D    T
+                                  R             δG(x′ ,t′ )
+where Θwave (x, t), (x′ , t′ ); m = U δG(x,t)
+                                      δm(y) [m] · δm(y) [m]dy is defined as the wave kernel.
+Remark 2.1. The proof is provided in Appendix E.1. The fitting of the synthetic data is driven by the
+data misfit (uD      D
+              syn − uobs ) across the entire domain (data-driven), weighted by the wave kernel Θwave
+(physical guide). The wave kernel quantifies the coupling and correlation relationship between
+points (x, t) and (x′ , t′ ) through point-wise perturbations in the model space. This often leads to
+uncoordinated updates and severe crosstalk, i.e., fitting one data point adversely affects others.
+
+3   WAVE -BASED N EURAL TANGENT K ERNEL
+Let the space of neural network parameters be denoted by Θ ⊆ Rp . CR-FWI utilizes a coordinate-
+based neural network Fθ (·) : U → R with learnable parameters θ ∈ Θ, which maps a spatial
+coordinate x ∈ U to the corresponding velocity perturbation Fθ (x). Hence, the velocity model can
+be reparameterized as mθ (x) = Fθ (x) + m0 (x) (where m0 denotes the initial model) (Chen et al.,
+2025). Consider the following shallow fully-connected neural network with one hidden layer:
+                             1
+                   Fθ (x) = √ W 1 · σ(W 0 x + b0 ) + b1 ,            θ = {W 1 , W 0 , β 0 , β 1 },        (5)
+                              n
+where x ∈ U represents the coordinates input, σ : R → R denotes element-wise nonlinear acti-
+vation function, θ = {W 1 , W 0 , β 0 , β 1 } is the complete set of trainable parameters. In the usual
+initialization of NTK (Jacot et al., 2018; Bonfanti et al., 2024a), all the weights and biases are ini-
+tialized to be independent and identically distributed
+                                                     √    as the standard normal distribution N (0, 1).
+Here, we employ the NTK rescaling factor of 1/ n as introduced in the original work (Jacot et al.,
+2018). This specific scaling is crucial for ensuring the convergence of the initialized neural tangent
+kernel (Zhou & Yan, 2024). Hence, the optimization variables of CR-FWI change from the discrete
+velocity model m in equation 2 to neural parameters θ. The objective function can be expressed as:
+                                                         
+                              1 D               2
+                  min J (θ) ≜   usyn (θ) − uD
+                                            obs             , s.t. uD
+                                                                    syn (θ) = G[mθ ].                     (6)
+                  θ∈Θ         2                 L2 (D×T )
+
+When minimizing this PDE-constrained residual via gradient descent using the CR-FWI method,
+the evolution of the wavefield during this flow is characterized by the following proposition:
+Proposition 3.1 (Evolution of wavefield in CR-FWI). Consider the loss function in equation 6 and
+the gradient flow of the neural network in equation 5 with learning rate tends to zero, the synthetic
+data uD
+      syn evolves according to the following equation:
+
+                  ∂uD
+                    syn (x, t)
+                                      Z Z
+                                                                ′ ′          D      D  ′    ′
+                                                Θntk
+                                                                         
+                               =−                wave (x, t), (x , t ); θ · usyn − uobs dt dx ,           (7)
+                      ∂τ               D    T
+
+where Θntk
+       wave is the wave-based neural tangent kernel, defined as:
+                                                                   δG(x′ , t′ )
+                                           Z Z
+                            ′ ′                     δG(x, t)
+            Θntk
+                                     
+             wave (x, t), (x , t ); θ =                      [m] ·              [m] · Kτ (y, z; θ)dydz,   (8)
+                                            U     U δm(y)           δm(z)
+                        Pp        dmθ (y) dmθ (z)
+where Kτ (y, z; θ) =        i=1    dθi   · dθi is the standard NTK of networks with p parameters.
+
+
+                                                           4
+Published as a conference paper at ICLR 2026
+
+
+
+
+Remark 3.1. The proof can be found in Appendix E.2. When we set mθ (x) = m(x), the proposition
+3.1 degrades into 2.1 (see Proposition E.3). The wave kernel can be expressed as follows:
+                                                                  δG(x′ , t′ )
+                                             Z Z
+                                                     δG(x, t)
+             Θwave (x, t), (x′ , t′ ); m =
+                                        
+                                                              [m]              [m] · Kδ (y, z)dydz,      (9)
+                                             U     U δm(y)         δm(z)
+where Kδ (y, z) ≜ δ(y − z) is a Dirac kernel. Consequently, the wave-based NTK framework
+provides a unified framework for the simultaneous analysis of conventional FWI and CR-FWI.
+Remark 3.2. Unlike the Dirac kernel, the wave-based NTK encodes a smooth and architecture-
+dependent kernel that incorporates a joint guidance mechanism derived from the product of sensi-
+tivity kernels across different velocity model points, rather than relying on point-wise computations
+in the wave kernel, which enables coordinated global updates and may help mitigate cycle-skipping.
+
+4   M AIN T HEORETICAL R ESULTS
+Distinct from standard NTK, the wave-based NTK defined in Proposition 3.1 cannot converge to a
+deterministic kernel at initialization and during the training process (see the following Theorem 4.1)
+when the width of networks tends to infinity, due to the nonlinearity of FWI.
+Theorem 4.1. Consider the network defined in equation 5, which satisfies Assumption D.1. Let m∗
+be the convergent velocity model, and suppose that for every k ∈ N, there exists a time τk such that
+∥mθ(τk ) − m∗ ∥U ≤ εk with εk → 0 as k → ∞. Let θ be the neural parameters under Gaussian
+                                                                      n
+random initialization, i.e., θ(0) ∼ N (0, 1), and denote by Θntk wave τ the corresponding wave-based
+NTK with width n at time τ . Then, as the network width n → ∞, the following hold:
+(I) The wave-based NTK at initialization converges in distribution to a non-deterministic kernel:
+                                         n D \
+                                   Θntk    → Θntk
+                                    wave 0 −  wave ,            as n → ∞.
+(II) The wave-based NTK during training satisfies:
+                                                 n            ∞
+                      lim    sup      Θntk       ntk
+                                       wave τ − Θwave 0            > 0 almost surely.
+                     n→∞ τ ∈[0,∞)
+
+Remark 4.1. The proof is provided in Appendix E.3. The proof core lies in the fact that the wave
+kernel changes in response to variations in the velocity model. Here, the global minimum conver-
+gence assumption can be guaranteed for the output of nonlinear functions (Liu et al., 2020; 2022),
+while having the potential to be extended to nonlinear operators in future work. By Theorem 4.1, we
+conclude that the wave kernel is not a deterministic kernel during the training process. The conclu-
+sion that NTK is not a deterministic kernel has also been presented in other literature and research
+areas, like nonlinear PINN (Bonfanti et al., 2024b) and classification problems (Yu et al., 2025).
+Remark 4.2. Although the training dynamics of the wave-based NTK cannot be uniformly charac-
+terized by a fixed NTK matrix due to the stochasticity throughout the training trajectory, the time-
+varying NTK can still capture the local convergence behavior within sufficiently small intervals
+around time τ using tools such as stochastic differential equations and probability bounds (Evans,
+2012), which is a promising direction for future research. Specifically, within a sufficiently small
+training window, the velocity model changes small, keeping the wave-based NTK nearly constant.
+This local stability allows the kernel’s eigenvalue spectrum to quantitatively estimate local conver-
+gence rates. The wave-based NTK is a self-adjoint, compact, and non-negativeP∞      definite operator
+(see Proposition E.2), which has a spectral decomposition K(Θntk   wave ) =   k=1 λk ϕk ⊗ ϕk (where
+K is wave-based NTK operator, {λk }∞                                  ∞
+                                       k=1 denotes eigenvalue, {ϕk }k=1 is the corresponding eigen-
+function). The subsequent substitution of this decomposition into equation 8 leads to the following
+data misfit evolution equation along different spectral directions (see Proposition E.4):
+                                                       −Λτ
+                            |Q(uD           D
+                                syn (τ ) − uobs )| = e     |Q · (uD          D
+                                                                  syn (0) − uobs )|,                    (10)
+                                                                                    ∞
+ where Λ = diag(λ1 , λ2 , . . .) is eigenvalue sequence and Qf            ≜ ⟨f, ϕk ⟩k=1 denotes the spectral
+projection operator. Hence, larger NTK eigenvalues yield faster error reduction along their corre-
+sponding directions, i.e., the eigenvalue decay rate determines the convergence behavior.
+
+To explain the performance difference between conventional and INR-based FWI, the following
+theorem demonstrates that the latter exhibits a faster eigenvalue decay rate, i.e., INR-based FWI can
+capture large-scale low-frequency components to enhance the robustness and reduce the dependency
+on initial model accuracy, while its resolution of high-frequency details is consequently limited.
+
+
+                                                        5
+Published as a conference paper at ICLR 2026
+
+
+
+
+Theorem 4.2. Consider the wave kernel Θwave in equation 9 and the wave-based NTK Θntk      wave in
+equation 8 with eigenvalues {λj }∞
+                                 j=1 and {µ  } ∞
+                                            j j=1 (arranged in non-increasing order), respectively.
+Assume that the operator norm of Kτ satisfies ∥Kτ ∥ ≤ 1. Then, for all j ∈ N, we have µj ≤ λj .
+Remark 4.3. The proof is provided in Appendix E.4.1. It is reasonable to assume ||Kτ || ≤ 1
+because the NTK is often normalized or scaled such that its largest eigenvalue is bounded by 1
+(Jacot et al., 2018), which is a common practice in theoretical analysis.
+
+Theorem 4.2 indicates that the smooth kernel incorporated in the continuous representation truncates
+the rate along its high-frequency convergence direction. As a result, the rapid decay of eigenvalues in
+the wave-based NTK implies that low-frequency components (corresponding to larger eigenvalues)
+are optimized rapidly, thereby alleviating the risk of cycle-skipping and decreasing reliance on an
+accurate initial model. In contrast, high-frequency components, associated with the sharply decaying
+tail of the eigenvalue spectrum, converge more slowly due to their small eigenvalues, which lead to
+a slower reduction in error. By connecting the eigenvalue decay behavior of the wave-based NTK
+to optimization performance, such as robustness and convergence, it becomes essential to develop
+novel CR-FWI methods with deliberately tailored eigenvalue decay properties.
+
+5     N OVEL C ONTINUOUS R EPRESENTATION FWI M ETHODS
+We propose novel low-rank tensor function
+(LR-FWI) and multi-grid parametric encoding
+(MPE-FWI)-based FWI methods using contin-
+uous representations, shown in Fig. 3. LR-FWI
+and MPE-FWI improve the high-frequency
+convergence rate by reducing the attenuation
+rate of eigenvalues (Theorem 5.1). To fur-
+ther achieve a trade-off between robustness and
+convergence, we propose an integrated INR
+and multigrid representation (IG-FWI), whose
+eigenvalue decay rate is between INR-based
+and MPE-based FWI methods (Theorem 5.2).
+INR-based FWI. Traditional INR methods
+(Sitzmann et al., 2020; Sun et al., 2023a; Yang
+& Ma, 2025) use a coordinate-based neural net-
+work (e.g., MLP) with special activation func-
+tions to parameterize the velocity model (Fig. 3
+(a)). The INR can be expressed as
+    Fθ (x) = HD (σ(HD−1 (· · · σ(H1 (x)))),   (11)   Figure 3: Pipeline of CR-FWI. CR-FWI employs
+                                                     (a) implicit neural representation, (b) low rank
+where θ = {Hd }D
+               d=1 are weights of the MLP            tensor function, or (c) multi-grid parametric en-
+and σ(·) is a scalar activation function. The
+                                                     coding to represent the velocity parameter model
+choice of activation function significantly im-
+                                                     and integrate the wave equation in a loop.
+pacts the high-resolution representation capa-
+bility. In seismic FWI, Sun et al. (2023a) de-
+veloped IFWI using SINRE’s activation function (Sitzmann et al., 2020), while Yang & Ma (2025)
+proposed WinFWI incorporating Gabor wavelet activation functions (Saragadam et al., 2023).
+LR-FWI. The reparameterized subsurface geophysical parameters typically exhibit inherent struc-
+tural constraints, such as low-rank and non-local similarity (Li et al., 2024a). To embed these prop-
+erties, LR methods decompose the velocity model using tensor factorization methods (e.g., Tucker
+and CP decomposition) and represent the low-dimensional tensor separately using INRs (Luo et al.,
+2023), as shown in Fig. 3 (b). The general formulation of 2D LR-FWI can be expressed as:
+                        Fθ (x) = [C; Fθ1 , Fθ2 ](x) = Fθ1 (x1 ) × C × Fθ2 (x2 )⊤ ,                 (12)
+
+where x = (x1 , x2 ) denotes spatial coordinates, Fθ1 : R → R1×r1 , Fθ2 : R → R1×r2 are one di-
+mensional coordinate networks (e.g., INRs), and C ∈ Rr1 ×r2 is the core matrix. Hence, the neural
+parameters are θ = {θ1 , θ2 , C}. Moreover, the LR-FWI method enhances the convergence rate for
+high-frequency components due to an appropriate eigenvalue decay rate, which we have empirically
+
+
+                                                     6
+Published as a conference paper at ICLR 2026
+
+
+
+
+verified through numerical experiments (see Fig. 5 (c)). However, providing a rigorous mathemati-
+cal proof of the eigenvalue decay rate remains challenging due to the complex structure of the tensor
+product, which will be a key objective of our future research based on tensor decomposition theory
+(Kolda & Bader, 2009) and matrix analysis (Horn & Johnson, 2012).
+MPE-based FWI. Multi-grid parametric encoding employs trainable auxiliary data structures
+(e.g., grid-based representations) to construct higher-dimensional embedding spaces. As illustrated
+in Fig. 3 (c), MPE-based FWI leverages a multigrid hash encoding (Müller et al., 2022) to represent
+the velocity model. The hash function h(·) : U → Rng ×nf maps a coordinate point x ∈ U to a
+feature vector via h(x) ∈ Rng ×nf , where ng denotes the number of multigrid levels and nf is the
+number of features per grid. Then, these interpolated features are passed through a lightweight INR
+to produce the physical velocity value. The overall representation can be expressed as:
+                                                                 d
+                                                                M            
+                    Fθ (x) = MLP (h(x); θ) ,   where h(x) =              xi πi mod T,             (13)
+                                                                  i=1
+
+where πi are large prime numbers, T is the hash table size, and ⊕ denotes the bit-wise exclusive-or
+operation. For each query point x, the feature is obtained by interpolating the embeddings from
+adjacent grid vertices across multiple resolution levels (Audia et al., 2025; Luo et al., 2025).
+The MPE approach integrates the representational flexibility of INR with the efficient spatial lookup
+offered by multigrid hash encoding, leveraging a grid structure to accelerate convergence and alle-
+viate spectral bias (Audia et al., 2025). The effectiveness of MPE-FWI is explained in Theorem 5.1,
+which provides a lower bound on the eigenvalues of its wave-based NTK.
+Theorem 5.1. Let Θntk            ntk
+                      INR and ΘMPE be the wave-based NTK for INR-based FWI and MPE-based FWI
+                                 ∞                     ∞
+                          ntk
+with eigenvalues {λi (ΘINR )}i=1 and {λi (Θntk MPE )}i=1 in non-increasing order, respectively. Then,
+for a dataset of size n, the i-th eigenvalues satisfy λi (Θntk          ntk
+                                                           MPE ) ≥ λi (ΘINR ).
+Remark 5.1. The proof can be found in Appendix E.4.2. The proof of this theorem is based on the
+fact that the eigenvalues of NTK of MPE are not smaller than those in INR, i.e., the inequality (Audia
+et al., 2025) λi (KMPE ) ≥ λi (KINR )+λn (K+ ) ≥ λi (KINR ), where KINR and KMPE are the NTKs for
+INR and the same INR composed with MPE, respectively, and K+ is a positive semi-definite matrix
+arising from the learnable grid parameters in MPE. This theorem guarantees a strict elevation of
+the entire eigenvalue spectrum, accelerating the learning of high-frequency components, especially
+starting from a smooth initial velocity model. However, the eigenvalue decay rate is inadequate
+to address the ill-posedness and nonlinearity inherent in FWI (see Tab. 1). Therefore, a novel
+continuous representation tailored for FWI needs to be developed, one that incorporates a suitable
+eigenvalue decay rate to achieve a more balanced trade-off between convergence and robustness.
+
+5.1 I NTEGRATED INR- MULTIGRID HYBRID REPRESENTATION
+Based on eigenvalue analysis for wave ker-
+nel and wave-based NTK, the high-frequency
+convergence of INR-based FWI methods is in-
+herently limited due to faster eigenvalue de-
+cay (Theorem 4.2), whereas the robustness of
+classical FWI and MPE-based FWI methods
+remains constrained due to slower eigenvalue
+decay (Theorem 5.1). To achieve a balanced
+robustness-convergence trade-off, we propose a
+novel continuous representation by integrating Figure 4: Pipeline of the proposed INR-Grid hy-
+the INR and MPE for FWI, termed IG-FWI, as brid representation for FWI. This method com-
+shown in Fig. 4. IG-FWI employs a tiny INR bines encoding features from INR and MPE,
+to implicitly encode smooth features into the la- which are then fused using an MLP network.
+tent space, which are then combined with multi-
+grid encoding features. Next, these features are combined using a tiny MLP. The reparameterized
+velocity model can be expressed as follows:
+                                                       √                p
+                 Fθ (x) = MLP v(x) ,     where v(x) =       α · h(x) ⊕       (1 − α) · I(x),      (14)
+where h(·) is a hash encoding defined in equation 13, I(·) is a tiny INR defined in equation√11, and
+                                                                                   √
+hybrid features v ∈ R(ng nf +nr ) is formed by splicing h(·) and I(·) with scaling α and 1 − α,
+
+
+                                                  7
+Published as a conference paper at ICLR 2026
+
+
+
+
+respectively, where nr denotes the output dimension of I(·). The following theorem indicates that
+the eigenvalue decay of IG-FWI is, as desired, between that of INR-based FWI and MPE-FWI.
+                                                                    ntk ∞
+Theorem 5.2. Let Θntk
+                    IG be the NTK of IG-FWI with eigenvalues {λi (ΘIG )}i=1 . When INR and MPE
+features are normalized such that their gradient norms are comparable, then for all i ∈ N,
+                                 λi (Θntk          ntk         ntk
+                                      INR ) ≤ λi (ΘIG ) ≤ λi (ΘMPE ).
+
+Hence, the eigenvalue decay rate of λi (Θntk                             ntk            ntk
+                                         IG ) lies between those of λi (ΘINR ) and λi (ΘMPE ).
+Remark 5.2. The proof is provided in Appendix E.4.3. By balancing the eigenvalue decay in this
+manner, IG-FWI successfully inherits the robustness of INR-based methods and the superior con-
+vergence of MPE-based methods, thereby achieving more accurate and reliable inversion results.
+
+6     E XPERIMENTAL A NALYSIS AND A PPLICATIONS
+Baselines and Implementation Details. We carefully select widely used conventional FWI meth-
+ods, including automatic differentiation-based FWI (i.e., ADFWI) (Liu et al., 2025a), ADFWI
+with TV regularization (i.e., ADFWI-TV) (Esser et al., 2018), ADFWI with weighted envelope
+correlation-based loss function (i.e., WECI-FWI) (Song et al., 2023), and frequency-based multi-
+scale inversion FWI (i.e., MS-FWI) (Fichtner et al., 2013), and existing state-of-the-art CR-FWI
+methods, including INR-based FWI with SINRE’s activation function (i.e., IFWI) (Sun et al.,
+2023a) and Gabor wavelet activation function (i.e., WinFWI) (Yang & Ma, 2025) to compare with
+our proposed novel CR-FWI methods, including multigrid parametric encoding FWI (i.e., MPE-
+FWI), low-rank tensor decomposition-based FWI (i.e., LR-FWI), and INR-Grid based FWI (i.e.,
+IG-FWI). We provide more implementation details for each baseline in the Appendix B.1. More-
+over, we also provide comparisons with InversionNet (Wu & Lin, 2019b) on OpenFWI datasets.
+Datasets and Scenarios. We evaluate the baselines and our proposed methods on Marmousi
+(Brougois et al., 1990), 2D SEG/EAGE Salt and Overthrust (Aminzadeh, 1996), and 2004 BP (Bil-
+lette & Brandsberg-Dahl, 2005) models using different initial velocity models (i.e., smooth, linear,
+and constant velocity models). Moreover, we test the robustness w.r.t. the seismic data quality (i.e.,
+noise interference, missing low frequencies, and sparse sampling) for the Marmousi model. The
+detailed forward modeling and acquisition system settings are provided in Appendix B.2.
+6.1   E MPIRICAL VALIDATION OF OUR WAVE - BASED NTK THEORETICAL RESULTS
+
+
+
+
+Figure 5: (a) Mean and standard deviation of the Frobenius norm of the wave-based NTK at initial-
+ization. (b) Relative Frobenius norm during training. (c) Eigenvalues decay using different methods.
+To verify that the wave-based NTK does not converge to a fixed kernel either at initialization or
+during training, we conduct NTK experiments on a one-dimensional FWI problem. The detailed
+experimental setup is described in Appendix B.4, with the results illustrated in Fig. 5 (a) and (b).
+Furthermore, we compare the eigenvalue decay of the wave-based NTK using ADFWI (Liu et al.,
+2025a), INR-based FWI (Sun et al., 2023a), and our proposed MPE-FWI, LR-FWI, and IG-FWI
+methods, as shown in Fig. 5 (c). From these experiments, we draw two key observations:
+• Obs 1: The wave-based NTK is non-stationary, not only during the inversion process, but also at
+  initialization, even when the width n tends to infinity, which supports Theorem 4.1.
+• Obs 2: The eigenvalue decay is slowest in conventional FWI, faster in MPE-based FWI, and
+  fastest in INR-based FWI. The proposed IG-FWI exhibits a decay rate between those of MPE-
+  based and INR-based FWI, consistent with Theorems 4.2, 5.1, and 5.2. The spectrum of LR-FWI
+  lies in a moderate region as well, and its theoretical analysis warrants discussion in the future.
+6.2 ROBUSTNESS COMPARISONS WITH INITIAL MODELS AND DATA QUALITIES
+To evaluate the performance of the FWI methods, we conduct a series of tests on both the baseline
+and our proposed CR-FWI methods. The experiments are carried out using four challenging datasets
+
+
+                                                  8
+Published as a conference paper at ICLR 2026
+
+
+
+
+Table 1: Performance comparison (MSE) of conventional FWI (ADFWI, ADFWI-TV, WECI-FWI,
+MS-FWI) and CR-FWI (IFWI, WinFWI, LR-FWI, MPE-FWI, IG-FWI) methods. Best results are
+highlighted in bold, and second-best are underlined. Complete results see Appendix B.6.1.
+                         Marmousi Model                   Overthrust Model     Salt Model      2004 BP Model Computing Resource
+ Method
+             Smooth Constant G-Noise F-Cutoff S-Shots Smooth Constant Smooth Constant Smooth Constant Time Params Memory
+ ADFWI    0.2132      1.1522   0.5422   0.4975   0.4730   0.0592   1.3364    0.6462   0.6337   0.1003   0.4281   1.89   94.00   17.09
+ ADFWI-TV 0.2449      0.9386   0.3875   0.3764   0.3547   0.1154   1.3142    0.5041   0.5318   0.0995   0.4259   1.92   94.00   17.09
+ WECI-FWI 0.2977      1.2537   0.6366   0.3220   0.3337   0.1182   1.5526    0.3032   1.0293   0.0951   0.3847   3.12   94.00   17.56
+ MS-FWI   0.1683      1.1313   0.3547   0.4198   0.3325   0.0612   1.0802    0.5358   0.9234   0.0672   0.4667   2.25   94.00   17.09
+ IFWI        0.1907   0.9474   0.3374   0.3358   0.3483   0.0683   0.6432    0.1201   0.7412   0.0719   0.1412   1.88   50.05   17.48
+ WinFWI      0.2013   0.4689   0.3514   0.3460   0.3239   0.0682   0.5738    0.1223   0.3549   0.0812   0.1083   1.90   60.63   18.20
+ LR-FWI      0.1638   0.2893   0.2553   0.2276   0.2641   0.0548   0.1592    0.2785   0.2368   0.0481   0.1248   1.92   77.91   17.10
+ MPE-FWI     0.1427   2.2266   0.2990   0.3322   0.3338   0.0613   1.2887    0.8534   1.1008   0.0586    1.602   1.91   14.26   17.25
+ IG-FWI      0.1423   0.2961   0.2151   0.1846   0.1654   0.0587   0.5724    0.1181   0.1883   0.0521   0.0843   1.91   39.34   17.41
+ G-Noise: 8σ0 Gaussian noise added to data; F-Cutoff: Data with missing frequencies below 6 Hz; S-Shots: Only 5 shot gathers used;
+ Time: average running time for one epoch (s); Params: Parameter count (K); Memory: GPU memory overhead (GB).
+
+
+
+
+Figure 6: Conventional FWI and CR-FWI performance comparison using different initial velocity
+models on different velocity model datasets. More results are in the Appendices from B.6.2 to B.6.6.
+
+with different initial models, as well as three data-degraded scenarios based on the Marmousi model.
+Partial results are shown in Fig. 6 and Tab. 1 (computing resource metrics are evaluated using a
+single shot of the BP model per training run). From these results, we draw three main observations:
+• Obs 3: Conventional FWI (e.g., ADFWI and MS-FWI) and MPE-based FWI methods can re-
+  cover high-precision velocity models with rapid high-frequency convergence when an accurate
+  and smooth initial velocity model is available. However, the performance of these methods is
+  highly sensitive to the quality of the initial model and the seismic data. This limitation can be
+  attributed to the slow decay rate of eigenvalues, as established in Theorems 4.2 and 5.1.
+• Obs 4: INR-based FWI methods (e.g., IFWI and WinFWI) can recover satisfactory inversion
+  results even when starting from a constant initial model. However, this enhanced initial model
+  robustness comes at the expense of a slower convergence rate and reduced resolution, which can
+  be attributed to the relatively fast eigenvalue decay rate of the wave-based NTK (Theorem 4.2).
+• Obs 5: Our proposed FWI methods (i.e., LR-FWI and IG-FWI) achieve a trade-off between high-
+  precision results and robustness w.r.t. the initial model and data quality, which can be attributed
+  to the suitably controlled eigenvalue decay rate of the wave-based NTK for FWI (Theorem 5.2).
+Considering the inversion crime and computational challenges, we conduct a comparison on a more
+realistic 2014 Chevron model (see Appendix C.1) and the 3D Overthrust model (see Appendix C.2),
+which show that our proposed CRFWI can be used in more realistic large-scale inversion problems.
+
+6.3 C ONVERGENCE BEHAVIOR ANALYSIS FOR CRFWI
+To validate the convergence behavior using different FWI methods, we provide convergence curves
+of velocity model error (see Fig. 7) and generated velocity visualizations corresponding to different
+
+
+                                                                   9
+Published as a conference paper at ICLR 2026
+
+
+
+
+Figure 7: Convergence curves of velocity model MSE using different FWI methods and different
+datasets with constant initial models. (a) Marmousi. (b) Overthrust. (c) Salt body. (d) 2004 BP
+
+
+
+
+Figure 8: Generated velocity visualizations corresponding to different iterations using IFWI, MPE-
+FWI, and IG-FWI methods on 2004 BP model. More detailed results are in Appendix B.6.7.
+
+iterations (see Fig. 8), as detailed in Appendix B.6.7. These results indicate that conventional FWI
+and MPE-FWI methods achieve rapid convergence of high-frequency details at the cost of increased
+sensitivity, while IFWI and WinFWI enhance robustness at the expense of high-frequency details of
+inversion results. Our proposed IG-FWI and LR-FWI methods achieve a more balanced trade-off,
+maintaining robustness without sacrificing the convergence rate for high-frequency information.
+6.4 A BLATION EXPERIMENTS FOR IG-FWI
+We conduct a comprehensive ablation study to investi-
+gate the impact of key parameters (e.g., different INR fre-
+quency bases, different grid scales, and weighting factor),
+as shown in Fig. 9. The results show that both exces-
+sively high and low grid resolutions in MPE, as well as
+frequency settings in INR, may reduce the quality of in-
+version results, which is consistent with our theoretical
+results. Moreover, our proposed IG-FWI is robust to the
+weighting factor, which is typically set to 0.5.
+6.5 C OMPARISONS WITH DATA - DRIVEN METHOD
+Evaluations on the OpenFWI dataset show that our pro-
+posed methods outperform InversionNet (Wu & Lin,
+2019b) in reconstructing velocity structures from noisy
+data (see Tab. 2), as detailed in Appendix C.3.               Figure 9: Ablation study for frequency,
+                                                              grid resolution, and weighting factor.
+7   C ONCLUSION
+                                                           Table 2: MSE of data-driven FWI and
+In this study, we establish a unified theoretical analy-
+                                                           CRFWI. Best results are highlighted in
+sis framework based on the wave kernel and wave-based
+                                                           bold, and second-best are underlined.
+NTK to investigate the convergence and robustness of
+                                                            Methods InvNet ADFWI IFWI LR-FWI IG-FWI
+both conventional and continuous representation FWI.
+Our analysis reveals that the wave kernel and wave-based    FaltVel     36.78 21.30 11.72 6.65   6.94
+                                                            CurveVel 94.16 57.07 16.87 9.89      7.93
+NTK are non-stationary and exhibit distinct eigenvalue      FaltFault 113.18 48.23 46.59 19.59 28.84
+decay patterns, i.e., the wave kernel shows slow decay,     CurveFault 100.09 99.14 65.89 60.23 24.61
+                                                            Style       53.76 27.66 48.25 14.56 17.08
+whereas the wave-based NTK decays rapidly. From the
+theory of spectral analysis, this difference explains why
+conventional FWI achieves fast convergence but lacks robustness, while INR-based CR-FWI offers
+improved robustness at the cost of slower convergence. Motivated by these findings, we generalize
+the INR-based CR-FWI to a broader continuous representation FWI framework, which includes the
+proposed LR-FWI and MPE-FWI methods. Furthermore, we introduce a hybrid representation that
+integrates INR with a multigrid strategy for FWI, aiming to balance robustness and convergence
+by better controlling the eigenvalue decay. Tests on challenging datasets and diverse seismic data
+scenarios show the superior performance of the proposed CR-FWI methods.
+
+
+                                                  10
+Published as a conference paper at ICLR 2026
+
+
+
+
+ACKNOWLEDGEMENTS
+
+This work was supported by the Key Program of the National Natural Science Foundation of
+China (grant 42530802), the National Natural Science Foundation of China (No. 124B2029),
+the Key Program of the National Natural Science Foundation of China (grant 62476214), Funda-
+mental and Interdisciplinary Disciplines Breakthrough Plan of the Ministry of Education of China
+(JYB2025XDXM101), and Tianyuan Fund for Mathematics of the National Natural Science Foun-
+dation of China (Grant No. 12426105).
+
+R EFERENCES
+Ayrat Abdullin and Umair Bin Waheed. Generalization capability of data-driven deep learning
+  models for seismic full-waveform inversion: An example using the openfwi dataset. In Third
+  International Meeting for Applied Geoscience & Energy, pp. 1083–1087. Society of Exploration
+  Geophysicists and American Association of Petroleum . . . , 2023.
+
+Sina Alemohammad, Zichao Wang, Randall Balestriero, and Richard Baraniuk. The recurrent neural
+  tangent kernel. arXiv preprint arXiv:2006.10246, 2020.
+
+Fred Aminzadeh. 3-d salt and overthrust seismic models. 1996.
+
+John E Anderson, Lijian Tan, and Don Wang. Time-reversal checkpointing methods for rtm and
+  fwi. Geophysics, 77(4):S93–S103, 2012.
+
+Aleksandr Aravkin, Tristan Van Leeuwen, and Felix Herrmann. Robust full-waveform inversion
+  using the student’s t-distribution. In SEG Technical Program Expanded Abstracts 2011, pp. 2669–
+  2673. Society of Exploration Geophysicists, 2011.
+
+Sanjeev Arora, Simon Du, Wei Hu, Zhiyuan Li, and Ruosong Wang. Fine-grained analysis of op-
+  timization and generalization for overparameterized two-layer neural networks. In International
+  conference on machine learning, pp. 322–332. PMLR, 2019.
+
+Samuel Audia, Soheil Feizi, Matthias Zwicker, and Dinesh Manocha. How learnable grids recover
+  fine detail in low dimensions: A neural tangent kernel analysis of multigrid parametric encodings.
+  arXiv preprint arXiv:2504.13412, 2025.
+
+Alberto Bietti and Julien Mairal. On the inductive bias of neural tangent kernels. Advances in Neural
+  Information Processing Systems, 32, 2019.
+
+FJ Billette and Sverre Brandsberg-Dahl. The 2004 bp velocity benchmark. In 67th EAGE Confer-
+  ence & Exhibition, pp. cp–1. European Association of Geoscientists & Engineers, 2005.
+
+Patrick Billingsley. Convergence of probability measures. John Wiley & Sons, 2013.
+
+Andrea Bonfanti, Giuseppe Bruno, and Cristina Cipriani. The challenges of the nonlinear regime
+  for physics-informed neural networks. Advances in Neural Information Processing Systems, 37:
+  41852–41881, 2024a.
+
+Andrea Bonfanti, Giuseppe Bruno, and Cristina Cipriani. The challenges of the nonlinear regime
+  for physics-informed neural networks. Advances in Neural Information Processing Systems, 37:
+  41852–41881, 2024b.
+
+A Brougois, Marielle Bourget, Patriek Lailly, Michel Poulet, Patrice Ricarte, and Roelof Versteeg.
+  Marmousi, model and data. In EAEG workshop-practical aspects of seismic data inversion, pp.
+  cp–108. European Association of Geoscientists & Engineers, 1990.
+
+Carey Bunks, Fatimetou M Saleck, Stephane Zaleski, and Guy Chavent. Multiscale seismic wave-
+  form inversion. Geophysics, 60(5):1457–1473, 1995.
+
+Yuan Cao, Zhiying Fang, Yue Wu, Ding-Xuan Zhou, and Quanquan Gu. Towards understanding the
+  spectral bias of deep learning. arXiv preprint arXiv:1912.01198, 2019.
+
+
+                                                 11
+Published as a conference paper at ICLR 2026
+
+
+
+
+Fuqiang Chen, Daniel Peter, and Matteo Ravasi. Cycle-skipping mitigation using misfit measure-
+  ments based on differentiable dynamic time warping. GEOPHYSICS, 87(4):R325–R335, 2022.
+  doi: 10.1190/geo2021-0598.1. URL https://doi.org/10.1190/geo2021-0598.1.
+Ruihua Chen, Bangyu Wu, Meng Li, and Kai Yang. Initial model incorporation for deep learning
+  fwi: Pretraining or denormalization? arXiv preprint arXiv:2506.05484, 2025.
+Yangkang Chen, Hanming Chen, Kui Xiang, and Xiaohong Chen. Geological structure guided
+  well log interpolation for high-fidelity full waveform inversion. Geophysical Supplements to the
+  Monthly Notices of the Royal Astronomical Society, 207(2):1313–1331, 2016.
+Zixiang Chen, Yuan Cao, Quanquan Gu, and Tong Zhang. A generalized neural tangent kernel
+  analysis for two-layer neural networks. Advances in Neural Information Processing Systems, 33:
+  13363–13373, 2020.
+S Cui. Introduction to modern theory of partial differential equations, 2015.
+Chengyuan Deng, Shihang Feng, Hanchen Wang, Xitong Zhang, Peng Jin, Yinan Feng, Qili Zeng,
+  Yinpeng Chen, and Youzuo Lin. Openfwi: Large-scale multi-structural benchmark datasets for
+  full waveform inversion. Advances in Neural Information Processing Systems, 35:6007–6020,
+  2022.
+Bo Du, Jian Sun, Anqi Jia, Ning Wang, and Huaishan Liu. Physics-informed robust and implicit
+  full waveform inversion without prior and low-frequency information. IEEE Transactions on
+  Geoscience and Remote Sensing, 2024.
+Björn Engquist and Yunan Yang. Optimal transport based seismic inversion: Beyond cycle skipping.
+  Communications on Pure and Applied Mathematics, 75(10):2201–2244, 2022.
+Ernie Esser, Lluis Guasch, Tristan van Leeuwen, Aleksandr Y Aravkin, and Felix J Herrmann. Total
+  variation regularization strategies in full-waveform inversion. SIAM Journal on Imaging Sciences,
+  11(1):376–406, 2018.
+Lawrence C Evans. Partial differential equations: Second edition. Wadsworth & Brooks/cole Math-
+  ematics, 19(1):211–223, 2010.
+Lawrence C Evans. An introduction to stochastic differential equations, volume 82. American
+  Mathematical Soc., 2012.
+Gabriel Fabien-Ouellet, Erwan Gloaguen, and Bernard Giroux. A stochastic l-bfgs approach for
+  full-waveform inversion. In SEG Technical Program Expanded Abstracts 2017, pp. 1622–1627.
+  Society of Exploration Geophysicists, 2017.
+Andreas Fichtner, Jeannot Trampert, Paul Cupillard, Erdinc Saygin, Tuncay Taymaz, Yann Capdev-
+  ille, and Antonio Villasenor. Multiscale full waveform inversion. Geophysical Journal Interna-
+  tional, 194(1):534–556, 2013.
+Weiye Gan, Yicheng Li, Qian Lin, and Zuoqiang Shi. Neural tangent kernel of neural networks with
+ loss informed by differential operators. arXiv preprint arXiv:2503.11029, 2025.
+Lluı́s Guasch, Oscar Calderón Agudo, Meng-Xing Tang, Parashkev Nachev, and Michael Warner.
+  Full-waveform inversion imaging of the human brain. NPJ digital medicine, 3(1):28, 2020.
+Naveen Gupta, Medha Sawhney, Arka Daw, Youzuo Lin, and Anuj Karpatne. A unified framework
+  for forward and inverse problems in subsurface imaging using latent space translations. arXiv
+  preprint arXiv:2410.11247, 2024.
+Shravan M Hanasoge. Full waveform inversion of solar interior flows. The Astrophysical Journal,
+  797(1):23, 2014.
+Leon Herrmann, Tim Bürchner, Felix Dietrich, and Stefan Kollmannsberger. On the use of
+  neural networks for full waveform inversion. Computer Methods in Applied Mechanics
+  and Engineering, 415:116278, 2023. ISSN 0045-7825. doi: https://doi.org/10.1016/j.cma.
+  2023.116278. URL https://www.sciencedirect.com/science/article/pii/
+  S0045782523004024.
+
+
+                                                 12
+Published as a conference paper at ICLR 2026
+
+
+
+
+Roger A Horn and Charles R Johnson. Matrix analysis. Cambridge university press, 2012.
+Arthur Jacot, Franck Gabriel, and Clément Hongler. Neural tangent kernel: Convergence and gen-
+  eralization in neural networks. Advances in neural information processing systems, 31, 2018.
+Navnit Jha and Ekansh Mallik. Gpinn with neural tangent kernel technique for nonlinear two point
+  boundary value problems. Neural Processing Letters, 56(3):192, 2024.
+Peng Jin, Xitong Zhang, Yinpeng Chen, Sharon X Huang, Zicheng Liu, and Youzuo Lin. Unsuper-
+  vised learning of full-waveform inversion: Connecting CNN and partial differential equation in a
+  loop. In International Conference on Learning Representations, 2022.
+Tamara G Kolda and Brett W Bader. Tensor decompositions and applications. SIAM review, 51(3):
+  455–500, 2009.
+Jiahang Li, Hitoshi Mikada, and Junichi Takekawa. Inexact augmented lagrangian method-based
+   full-waveform inversion with randomized singular value decomposition. Journal of Geophysics
+   and Engineering, 21(2):572–597, 2024a.
+Shiqian Li, Zhi Li, Zhancun Mu, Shiji Xin, Zhixiang Dai, Kuangdai Leng, Ruihua Zhang, Xiaodong
+  Song, and Yixin Zhu. Globaltomo: A global dataset for physics-ml seismic wavefield modeling
+  and fwi. arXiv preprint arXiv:2406.18202, 2024b.
+Chaoyue Liu, Libin Zhu, and Misha Belkin. On the linearity of large non-linear models: when
+  and why the tangent kernel is constant. Advances in Neural Information Processing Systems, 33:
+  15954–15964, 2020.
+Chaoyue Liu, Libin Zhu, and Mikhail Belkin. Loss landscapes and optimization in over-
+  parameterized non-linear systems and neural networks. Applied and Computational Harmonic
+  Analysis, 59:85–116, 2022.
+Feng Liu, Haipeng Li, Guangyuan Zou, and Junlun Li. Automatic differentiation-based full wave-
+  form inversion with flexible workflows. Journal of Geophysical Research: Machine Learning
+  and Computation, 2(1):e2024JH000542, 2025a.
+Fengliang Liu, Hui Zhou, Hanming Chen, Lingqian Wang, and Yuxin Fu. A full-waveform inversion
+  method based on structural tensor constraints. IEEE Transactions on Geoscience and Remote
+  Sensing, 2025b.
+Youshan Liu, Jiwen Teng, Tao Xu, José Badal, Qinya Liu, and Bing Zhou. Effects of conjugate
+  gradient methods and step-length formulas on the multiscale full waveform inversion in time
+  domain: Numerical experiments. Pure and Applied Geophysics, 174:1983–2006, 2017.
+Yisi Luo, Xile Zhao, Zhemin Li, Michael K Ng, and Deyu Meng. Low-rank tensor function repre-
+  sentation for multi-dimensional data recovery. IEEE transactions on pattern analysis and machine
+  intelligence, 46(5):3351–3369, 2023.
+Yisi Luo, Xile Zhao, and Deyu Meng. Continuous representation methods, theories, and applica-
+  tions: An overview and perspectives. arXiv preprint arXiv:2505.15222, 2025.
+Levi D McClenny and Ulisses M Braga-Neto. Self-adaptive physics-informed neural networks.
+  Journal of Computational Physics, 474:111722, 2023.
+Ludovic Métivier, Romain Brossier, Stéphane Operto, and Jean Virieux. Full waveform inversion
+  and the truncated newton method. SIAM review, 59(1):153–195, 2017.
+Ben Mildenhall, Pratul P Srinivasan, Matthew Tancik, Jonathan T Barron, Ravi Ramamoorthi, and
+  Ren Ng. Nerf: Representing scenes as neural radiance fields for view synthesis. Communications
+  of the ACM, 65(1):99–106, 2021.
+Thomas Müller, Alex Evans, Christoph Schied, and Alexander Keller. Instant neural graphics prim-
+  itives with a multiresolution hash encoding. ACM transactions on graphics (TOG), 41(4):1–15,
+  2022.
+
+
+                                               13
+Published as a conference paper at ICLR 2026
+
+
+
+
+Luan T Nguyen and Ryan T Modrak. Ultrasonic wavefield inversion and migration in complex
+  heterogeneous structures: 2d numerical imaging and nondestructive testing experiments. Ultra-
+  sonics, 82:357–370, 2018.
+Mike Nguyen and Nicole Mücke. Optimal convergence rates for neural operators. arXiv preprint
+ arXiv:2412.17518, 2024.
+Bernt Oksendal. Stochastic differential equations: an introduction with applications. Springer
+  Science & Business Media, 2013.
+Damir Pasalic and Ray McGarry. Convolutional perfectly matched layer for isotropic and
+  anisotropic acoustic wave equations. In SEG International Exposition and Annual Meeting, pp.
+  SEG–2010. SEG, 2010.
+Shaoxiang Qin, Fuyuan Lyu, Wenhui Peng, Dingyang Geng, Ju Wang, Xing Tang, Sylvie Leroyer,
+  Naiping Gao, Xue Liu, and Liangzhu Leon Wang. Toward a better understanding of fourier neural
+  operators from a spectral perspective. arXiv preprint arXiv:2404.07200, 2024.
+Majid Rasht-Behesht, Christian Huber, Khemraj Shukla, and George Em Karniadakis. Physics-
+ informed neural networks (pinns) for wave propagation and full waveform inversions. Journal of
+ Geophysical Research: Solid Earth, 127(5):e2021JB023120, 2022.
+Vishwanath Saragadam, Daniel LeJeune, Jasper Tan, Guha Balakrishnan, Ashok Veeraraghavan,
+  and Richard G Baraniuk. Wire: Wavelet implicit neural representations. In Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 18507–18516, 2023.
+Gerard T Schuster, Yuqing Chen, and Shihang Feng. Review of physics-informed machine learning
+  inversion of geophysical data. Geophysics, 89(6):1–91, 2024.
+Matthieu Simeoni, Sepand Kashani, Paul Hurley, and Martin Vetterli. Deepwave: a recurrent neural-
+ network for real-time acoustic imaging. Advances In Neural Information Processing Systems, 32,
+ 2019.
+Vincent Sitzmann, Julien Martel, Alexander Bergman, David Lindell, and Gordon Wetzstein. Im-
+  plicit neural representations with periodic activation functions. Advances in neural information
+  processing systems, 33:7462–7473, 2020.
+Chao Song and Tariq A Alkhalifah. Wavefield reconstruction inversion via physics-informed neural
+  networks. IEEE Transactions on Geoscience and Remote Sensing, 60:1–12, 2021.
+Chao Song, Yanghua Wang, Alan Richardson, and Cai Liu. Weighted envelope correlation-based
+  waveform inversion using automatic differentiation. IEEE Transactions on Geoscience and Re-
+  mote Sensing, 61:1–11, 2023.
+Bingbing Sun and Tariq Alkhalifah. Ml-descent: An optimization algorithm for full-waveform
+  inversion using machine learning. Geophysics, 85(6):R477–R492, 2020.
+Jian Sun, Zhan Niu, Kristopher A Innanen, Junxiao Li, and Daniel O Trad. A theory-guided deep-
+   learning formulation and optimization of seismic waveform inversion. Geophysics, 85(2):R87–
+   R99, 2020.
+Jian Sun, Kristopher Innanen, Tianze Zhang, and Daniel Trad. Implicit seismic full waveform
+   inversion with deep neural representation. Journal of Geophysical Research: Solid Earth, 128(3):
+   e2022JB025964, 2023a.
+Mengyao Sun, Jie Zhang, and Wei Zhang. Alternating first-arrival traveltime tomography and wave-
+ form inversion for near-surface imaging. Geophysics, 82(4):R245–R257, 2017.
+Pengpeng Sun, Fangshu Yang, Hongxian Liang, and Jianwei Ma. Full-waveform inversion using a
+  learned regularization. IEEE Transactions on Geoscience and Remote Sensing, 61:1–15, 2023b.
+Jeroen Tromp. Seismic wavefield imaging of earth’s interior across scales. Nature Reviews Earth &
+   Environment, 1(1):40–53, 2020.
+
+
+                                                14
+Published as a conference paper at ICLR 2026
+
+
+
+
+Dirk Philip van Herwaarden, Christian Boehm, Michael Afanasiev, Solvi Thrastarson, Lion
+  Krischer, Jeannot Trampert, and Andreas Fichtner. Accelerated full-waveform inversion using
+  dynamic mini-batches. Geophysical Journal International, 221(2):1427–1438, 2020.
+Roelof Versteeg. The marmousi experience: Velocity model determination on a synthetic complex
+  data set. The Leading Edge, 13(9):927–936, 1994.
+Jean Virieux and Stéphane Operto. An overview of full-waveform inversion in exploration geo-
+  physics. Geophysics, 74(6):WCC1–WCC26, 2009.
+Jean Virieux, Amir Asnaashari, Romain Brossier, Ludovic Métivier, Alessandra Ribodetti, and Wei
+  Zhou. An introduction to full waveform inversion. In Encyclopedia of exploration geophysics,
+  pp. R1–1. Society of Exploration Geophysicists, 2017.
+Sifan Wang, Xinling Yu, and Paris Perdikaris. When and why pinns fail to train: A neural tangent
+   kernel perspective. Journal of Computational Physics, 449:110768, 2022.
+Yukai Wo, Jingjing Zong, Hua-Wei Zhou, Kai Li, Yubo Yue, and Xuri Huang. Near-surface struc-
+  tural regularization for full-waveform inversion using directional total variation. IEEE Transac-
+  tions on Geoscience and Remote Sensing, 2025.
+Ru-Shan Wu, Jingrui Luo, and Bangyu Wu. Seismic envelope inversion and modulation signal
+  model. Geophysics, 79(3):WA13–WA24, 2014.
+Yue Wu and Youzuo Lin. Inversionnet: An efficient and accurate data-driven full waveform inver-
+  sion. IEEE Transactions on Computational Imaging, 6:419–433, 2019a.
+Yue Wu and Youzuo Lin. Inversionnet: An efficient and accurate data-driven full waveform inver-
+  sion. IEEE Transactions on Computational Imaging, 6:419–433, 2019b.
+Xianliang Xu, Ye Li, and Zhongyi Huang. Convergence analysis of wide shallow neural operators
+  within the framework of neural tangent kernel. arXiv preprint arXiv:2412.05545, 2024.
+Zhi-Qin John Xu, Yaoyu Zhang, and Tao Luo. Overview frequency principle/spectral bias in deep
+  learning. Communications on Applied Mathematics and Computation, 7(3):827–864, 2025.
+Zichao Yan and Yanfei Wang. Full waveform inversion with sparse structure constrained regulariza-
+  tion. Journal of Inverse and Ill-posed Problems, 26(2):243–257, 2018.
+Dinghui Yang, Xingpeng Dong, Jiandong Huang, Zhilong Fang, Xueyuan Huang, Shaolin Liu,
+  Mengxue Liu, and Weijuan Meng. High-resolution full waveform seismic imaging: Progresses,
+  challenges, and prospects. Science China Earth Sciences, pp. 1–28, 2025.
+Fangshu Yang and Jianwei Ma. Wasserstein distance-based full-waveform inversion with a regu-
+  larizer powered by learned gradient. IEEE Transactions on Geoscience and Remote Sensing, 61:
+  1–13, 2023.
+Fangshu Yang and Jianwei Ma. Gabor-wavelet-activation implicit neural learning for full waveform
+  inversion. Geophysics, 90(3):1–78, 2025.
+Zixiong Yu, Songtao Tian, and Guhan Chen. Divergence of empirical neural tangent kernel in
+  classification problems. arXiv preprint arXiv:2504.11130, 2025.
+Zhongping Zhang, Yue Wu, Zheng Zhou, and Youzuo Lin. Velocitygan: Subsurface velocity image
+  estimation using conditional adversarial networks. In 2019 IEEE Winter Conference on Applica-
+  tions of Computer Vision (WACV), pp. 705–714. IEEE, 2019.
+Hongkai Zheng, Wenda Chu, Bingliang Zhang, Zihui Wu, Austin Wang, Berthy T Feng, Caifeng
+  Zou, Yu Sun, Nikola Kovachki, Zachary E Ross, et al. Inversebench: Benchmarking plug-and-
+  play diffusion priors for inverse problems in physical sciences. arXiv preprint arXiv:2503.11043,
+  2025.
+Zijian Zhou and Zhenya Yan. Is the neural tangent kernel of pinns deep learning general partial
+  differential equations always convergent? Physica D: Nonlinear Phenomena, 457:133987, 2024.
+
+
+                                                15
+Published as a conference paper at ICLR 2026
+
+
+
+
+Min Zhu, Shihang Feng, Youzuo Lin, and Lu Lu. Fourier-deeponet: Fourier-enhanced deep operator
+ networks for full waveform inversion with improved accuracy, generalizability, and robustness.
+ Computer Methods in Applied Mechanics and Engineering, 416:116300, 2023.
+
+
+
+
+                                               16
+Published as a conference paper at ICLR 2026
+
+
+
+
+S UPPLEMENTAL M ATERIAL
+This supplemental material is divided into the following five appendices.
+• Appendix A: Related works about existing FWI, NTK, and discussion.
+• Appendix B: Experimental details about baselines, datasets, forward modeling settings, the solu-
+  tion of the wave equation, wave-based NTK experiments, and main inversion results.
+• Appendix C: additional experiments including 2014 Chevron blind test, 3D SEG/EAGE Over-
+  thrust model, and comparisons with supervised data-driven FWI method.
+• Appendix D: Preliminary about standard NTK and hyperbolic PDE theory.
+• Appendix E: Proof of Propositions 2.1, 3.1, and Theorems 4.1, 4.2, 5.1, and 5.2.
+Comprehensive details on hyperparameters and model architectures are provided to ensure all ex-
+periments can be exactly replicated. For the theoretical components, all proofs and mathematical
+derivations are included in the appendix with detailed step-by-step explanations.
+
+A     R ELATED W ORKS
+In this section, we review relevant work covering conventional FWI methods, neural representation-
+based FWI methods, and the neural tangent kernel theory.
+
+A.1    C ONVENTIONAL FWI METHODS
+To alleviate the ill-posedness of FWI, many techniques like misfit functions, prior regularization,
+multiscale inversion strategies, and optimization algorithms have been developed. For instance, de-
+signing more convex misfit functions using correlation information (e.g., envelope (Wu et al., 2014),
+global correlation (Song et al., 2023)) and probability distribution (e.g., Student-T distribution (Ar-
+avkin et al., 2011), optimal transport (Yang & Ma, 2023)) to reduce the reliance on initial models.
+Additionally, incorporating prior knowledge using explicit regularization to enhance robustness, in-
+cluding local smoothness (e.g., total variation (Esser et al., 2018), Tikhonov (Yan & Wang, 2018))
+and geological constraints (e.g., structural dips (Wo et al., 2025), structure tensor (Liu et al., 2025b)).
+Furthermore, progressively inverting velocity models from low-frequency to high-frequency (Bunks
+et al., 1995), or from coarse-grid to fine-grid (Fichtner et al., 2013), can mitigate the local minima
+problem; Using high-order optimization algorithms like the truncated Newton method (Métivier
+et al., 2017), the quasi-Newton method (Fabien-Ouellet et al., 2017), and the conjugate gradient
+method (Liu et al., 2017) can also stabilize the inversion process.
+Discussion. Although existing conventional FWI methods can invert velocity models from inac-
+curate or linear initial models, they still struggle to produce satisfactory results using constant ini-
+tial models. Moreover, their performance remains highly sensitive to the seismic data quality. A
+promising future research direction involves understanding more conventional FWI methods using
+our proposed wave-based NTK framework. Such analysis would help build a deeper understand-
+ing of the roles played by the misfit function, regularization, and optimization algorithms in the
+inversion process, ultimately facilitating the development of more advanced FWI methods.
+
+A.2    N EURAL REPRESENTATION - BASED FWI METHODS
+Deep neural reparameterized FWI generates the velocity model using neural networks, which can
+be divided into data-driven supervised and physics-informed unsupervised FWI methods.
+A.2.1 DATA - DRIVEN SUPERVISED REPRESENTATION
+Data-driven supervised FWI methods directly learn the inverse operator of the wave equation by
+training a network from pairs of seismic data and corresponding label velocity models, like Inver-
+sionNet (CNN) (Wu & Lin, 2019a), VelocityGAN (GAN) (Zhang et al., 2019), Fourier-DeepOnets
+(Neural Operator) (Zhu et al., 2023), PnPDP-based FWI (Diffusion model) (Zheng et al., 2025).
+Due to the limited availability of geophysical labeled data, numerous synthetic datasets have been
+developed and widely adopted in existing studies (Abdullin & Bin Waheed, 2023; Gupta et al., 2024;
+Jin et al., 2022), such as acoustic OpenFWI (Deng et al., 2022), elastic EFWI (Müller et al., 2022),
+and GlobalTomo (Li et al., 2024b) datasets.
+Discussion. However, the generalization performance of such supervised frameworks is constrained
+by the distribution shift between synthetic training data (e.g., OpenFWI) and real-world velocity
+models (Schuster et al., 2024), particularly in regions characterized by complex fault systems and
+
+
+                                                    17
+Published as a conference paper at ICLR 2026
+
+
+
+
+salt bodies. Although data-driven methods that generate initial models represent a promising alter-
+native, this study focuses on achieving stable and high-precision inversion for challenging datasets
+such as the Marmousi and 2004 BP models. Our experiments with data-driven and our proposed
+CR-FWI methods on the OpenFWI datasets (Deng et al., 2022) demonstrated that our proposed
+unsupervised methods can outperform supervised approaches (see Appendix C.3).
+A.2.2 P HYSICS - INFORMED UNSUPERVISED REPRESENTATION
+Distinct from pure data-driven FWI methods, physics-informed unsupervised representation utilizes
+a neural network, e.g., a coordinate-based neural network, to represent the velocity model and in-
+tegrate the wave equation in a loop. For instance, Sun et al. (2023a) proposed implicit FWI, which
+represents the velocity model using an implicit neural representation with SINRE’s activation func-
+tion (Sitzmann et al., 2020). Subsequent advances include using INR with GELU activation (Du
+et al., 2024) and Gabor wavelet activation functions (Yang & Ma, 2025) to represent the velocity
+model. This INR-based CR-FWI method can reduce the dependence on initial models at the cost
+of a slow convergence rate. To our knowledge, only INR is used to represent the velocity models
+in FWI continuously. Moreover, Song & Alkhalifah (2021); Herrmann et al. (2023); Rasht-Behesht
+et al. (2022) introduced a physics-informed neural network (PINN)-based FWI methods, which use
+two INRs to represent the velocity model and the seismic wavefield, respectively. Physical con-
+straints are incorporated via a penalty term derived from the wave equation within the loss function.
+In a different vein, Jin et al. (2022) proposed an unsupervised learning framework for FWI (termed
+UPFWI), which employs a CNN to predict velocity models directly from observed seismic data.
+Discussion. Our research focuses on elucidating the mechanisms underlying the performance differ-
+ences between conventional FWI methods and existing CR-FWI methods, as discussed in (Sun et al.,
+2023a; Yang & Ma, 2025). Building on these insights, we propose several novel CR-FWI methods
+specifically tailored for enhanced inversion performance. Although PINN-based FWI and UPFWI
+fall outside the immediate scope of this study, our proposed wave-based NTK framework can be
+naturally extended to these approaches, which can be a promising direction for future research.
+
+A.3   N EURAL TANGENT K ERNEL
+Standard NTK provides a mathematical framework for analyzing the training dynamics of infinitely
+wide neural networks and argues that the gradient descent dynamics converge to a linear kernel
+regression problem governed by a deterministic kernel as network width tends to infinity (Jacot et al.,
+2018; Arora et al., 2019). This fundamental result holds for various neural network architectures,
+including multilayer perceptrons (Chen et al., 2020), CNNs (Bietti & Mairal, 2019), recurrent neural
+networks (Alemohammad et al., 2020), and linear PINNs (Wang et al., 2022; Gan et al., 2025).
+However, some studies indicate that the NTK is not a deterministic kernel under some conditions
+and scenarios, like the last layer of the network is non-linear (Liu et al., 2020), nonlinear physics-
+informed neural networks (Bonfanti et al., 2024b), and classification problems using fully connected
+neural networks and residual neural networks (Yu et al., 2025). NTK analysis has been applied to
+many fields, e.g., physics-informed neural networks (Jha & Mallik, 2024; McClenny & Braga-Neto,
+2023) and neural operator (Qin et al., 2024; Xu et al., 2024; Nguyen & Mücke, 2024).
+Discussion. The proposed wave-based NTK also does not remain constant at initialization or dur-
+ing training, due to the inherent nonlinearity of FWI. It offers a novel theoretical perspective on
+continuous representation FWI as a PDE-constrained nonlinear inverse problem. In contrast to the
+NTK theory developed for nonlinear PINNs in the context of forward PDE problems (Bonfanti
+et al., 2024b), our work focuses specifically on the inverse problem and incorporates the numerical
+solution of the nonlinear wave equation through neural network guidance.
+
+B     E XPERIMENTAL D ETAILS AND M AIN R ESULTS
+B.1   BASELINES AND HYPERPARAMETER SETTINGS
+We carefully select widely used conventional FWI methods and existing state-of-the-art CR-FWI
+methods to compare with our proposed novel CR-FWI methods, shown in Tab. 3. Moreover, we
+give more explanations and implementation details for each baseline and proposed method.
+• (Hyperparameter settings of conventional FWI methods) For ADFWI with TV regularization,
+  the isotropic constraint weights are set to αx = 2e−9 and αz = 2e−9 , respectively, with a maxi-
+  mum step size of 20 and a scaling factor gamma of 0.9. Moreover, for WECI-FWI methods, we
+
+
+                                                  18
+Published as a conference paper at ICLR 2026
+
+
+
+
+          Table 3: Conventional FWI, existing CR-FWI, and proposed CR-FWI methods.
+       Category              Abbreviation                             Method Name
+                       ADFWI (Liu et al., 2025a)            Automatic differentiation-based FWI
+      Conventional    ADFWI-TV (Esser et al., 2018)       ADFWI with total variant regularization
+      FWI Methods     WECI-FWI (Song et al., 2023)       Weighted envelope correlation-based FWI
+                      MS-FWI (Fichtner et al., 2013)     Frequency-based multiscale inversion FWI
+       Existing         IFWI (Sun et al., 2023a)          INR-based FWI with SINRE’s activation
+   CR-FWI Methods      WinFWI (Yang & Ma, 2025)        INR-based FWI with Gabor wavelet activation
+                           MPE-FWI (Ours)                Multigrid parametric encoding-based FWI
+      Proposed
+                           LR-FWI (Ours)                Low-rank tensor decomposition-based FWI
+   CR-FWI Methods
+                            IG-FWI (Ours)                      Hybrid INR-Grid based FWI
+
+  use weighted envelope misfit and global correlation misfit (Song et al., 2023), where the weights
+  change according to the logistic function as the number of iterations increases following (Song
+  et al., 2023). Furthermore, for the MS-FWI method, we divide the observed seismic data into 6
+  frequency bands, ranging from 4 Hz to 14 Hz, with an interval of 2 Hz.
+• (Hyperparameter settings of existing CR-FWI methods) For IFWI, we use the sine activation
+  function with frequency hyperparameter ω0 = 30 (where ω0 controls the frequency of the sine
+  function) for MLP, and the depth of the MLP is set to 4. The number of neurons of the MLP is
+  set to 128, following the recommended settings in the paper (Sun et al., 2023a). Moreover, for
+  WinFWI, we use the Gabor wavelet activation function with hyperparameters ω0 = 5 and s0 = 5
+  (where ω0 controls the frequency of the wavelet and s0 controls the frequency of the wavelet).
+  The depth of the MLP is set to 4, and the number of neurons of the MLP is set to 200, following
+  the recommended settings in the paper (Yang & Ma, 2025).
+• (Hyperparameter settings of our proposed CR-FWI methods) For the proposed LR-FWI
+  method, we employ the same sine activation function as IFWI. The rank of the low-rank ma-
+  trix factorization is set to half of the model dimension. The depth of the MLPs is set to 3, and
+  the number of neurons in the MLPs is set to 128. Moreover, the MPE-FWI method utilizes a
+  multi-resolution hash grid (Müller et al., 2022) encoding with 16 levels, a base resolution of 50,
+  and a per-level scale factor of 1.05. This feature grid is combined with a compact MLP with two
+  hidden layers of 64 neurons each to model the inverse problem. Furthermore, the IG-FWI model
+  employs a hybrid architecture, combining a multi-resolution hash grid encoding (base resolution
+  50 with 16 levels) with a sinusoidal feature network (2 layers of 128 neurons with ω0 = 30).
+  These extracted features are subsequently fused and processed by a compact MLP (2 layers of 64
+  neurons) to generate the final physical property output.
+The Adam optimizer is used to optimize the learnable parameters in all methods. The learning rate is
+set to 5 for conventional FWI methods and 0.0001 for CR-FWI methods. All numerical experiments
+are conducted using an RTX 3090 GPU, leveraging the PyTorch framework.
+
+B.2    DATASETS AND FORWARD MODELING SETTINGS
+We evaluate baselines and our proposed methods on Marmousi (Brougois et al., 1990; Versteeg,
+1994), 2D SEG/EAGE Salt and Overthrust Aminzadeh (1996), and 2004 BP models (Billette &
+Brandsberg-Dahl, 2005) (see Fig. 10) using different initial velocity models (i.e., smooth, linear,
+and constant velocity models). The detailed forward modeling parameters are as follows:
+• Marmousi model: A 94 × 288 modified Marmousi model is used (15 m grid spacing) with 13
+  shots deployed at 300 m intervals (8 Hz Ricker wavelet). Receivers are spaced 15 m apart along
+  the surface. Wave propagation employs a 1.9 ms time step, recording 1,000 samples, following
+  the recommended setting in the paper (Sun et al., 2023a).
+• 2D SEG/EAGE Salt model: A 75 × 250 slice of the SEG/EAGE Overthrust model (10 m grid
+  spacing) is used, with 24 shots at 100 m intervals (10 Hz Ricker wavelet). Receivers are placed at
+  10 m intervals on the surface. Wave propagation uses 1.5 ms time steps and 2,500 samples.
+• 2D SEG/EAGE Overthrust model: A 94 × 401 slice of the SEG/EAGE Salt model (15 m grid
+  spacing) is used, with 20 shots at 270 m intervals (10 Hz Ricker wavelet). Receivers are placed at
+  15 m intervals on the surface. Wave propagation uses 4.0 ms time steps and 1,200 samples.
+• 2004 BP model: A 188 × 500 slice of the 2004 BP model (10 m grid spacing) is used, with 20
+  shots at 200 m intervals (10 Hz Ricker wavelet). Receivers are placed at 10 m intervals on the
+  surface. Wave propagation uses 4.0 ms time steps and 2,000 samples.
+
+
+                                                 19
+Published as a conference paper at ICLR 2026
+
+
+
+
+Figure 10: Datasets and Initial velocity model, including smooth, linear, and constant initial models.
+Marmousi, SEG/EAGE Salt and Overthrust models configuration features a free-surface top bound-
+ary and perfectly matched layer (PML) absorbing boundaries on the remaining three sides. More-
+over, we set PML absorbing boundaries on all sides for the 2004 BP model to reduce the impact of
+wavefield crosstalk. We employ the eighth-order finite difference method to solve the wave equation
+using deepwave (Simeoni et al., 2019). Representative observed seismic data are shown in Fig. 11.
+
+
+
+
+Figure 11: Observed seismic data using different velocity models, including (a) Marmousi model,
+(b) SEG/EAGE Overthrust model, (c) SEG/EAGE Salt model, and (d) 2004 BP model.
+Furthermore, the robustness tests can be divided into three scenarios using the Marmousi model,
+including noisy seismic data, seismic data with missing low frequencies, and sparse acquisition.
+• (Seismic data with noise) To evaluate the robustness of our proposed CR-FWI method against
+  noise, we conduct noise perturbation experiments using constant initial models. Gaussian noise
+  with standard deviations of σ = 4σ0 and σ = 8σ0 is added to the observed seismic data generated
+  from the Marmousi velocity model, where σ0 denotes the standard deviation of the original seismic
+  data. Noise contamination is a common issue in field data acquisition due to environmental factors,
+  which often obscure meaningful signals and degrade the inversion quality.
+• (Seismic data with missing low-frequencies) We further assess the robustness of CR-FWI under
+  the challenge of absent low-frequency components, a frequent limitation in field surveys caused
+  by bandwidth constraints of sources or receivers, and attenuation effects. The observed seismic
+  data are high-pass filtered at cutoff frequencies of 4 Hz and 6 Hz to simulate realistic scenarios
+  where low-frequency information is unavailable. The lack of low frequencies often leads to cycle-
+  skipping and convergence to local minima in conventional FWI.
+• (Seismic data with sparse acquisition) To mimic realistic acquisition constraints such as limited
+  survey access, high costs, or logistical barriers, which often result in spatially under-sampled data,
+  we decimate the source-receiver configurations in the seismic dataset derived from the Marmousi
+  model. Sparse acquisition leads to inadequate spatial sampling, posing significant challenges for
+  high-resolution velocity model building. This experiment tests the ability of CR-FWI to recover
+  accurate subsurface structures under such spatially limited conditions.
+B.3 N UMERICAL SOLUTION OF ACOUSTIC WAVE EQUATION
+We define the discrete wavefield solution, velocity model, and source function as tensors U ∈
+RNx ×Nz ×Nt , M ∈ RNx ×Nz , and S ∈ RNt , respectively, where Nx and Nz denote the number
+of discrete points in the x and z directions, and Nt represents the number of time steps. The deriva-
+tives in equation 1 are approximated using the second-order central finite difference method:
+                         ∂2U ℓ   U ℓ+1 − 2U ℓ + U ℓ−1
+                            2
+                               ≈                      ,     ∇2 U ℓ ≈ U ℓ ∗ K,                      (15)
+                          ∂t             ∆t2
+
+                                                  20
+Published as a conference paper at ICLR 2026
+
+
+
+
+where U ℓ denotes the wavefield tensor at time step ℓ, ∆t is the time step size, and K is the discrete
+convolution kernel for the Laplacian operator. Under the assumption that ∆x = ∆z = ∆h, the
+kernel K is given by:
+                                                "             #
+                                             1    0 1 0
+                                    K=            1 −4 1 .                                        (16)
+                                           ∆h2 0 1 0
+The iterative update scheme for the wavefield without considering boundary conditions is:
+                                                                             
+                    U ℓ+1 = 2U ℓ − U ℓ−1 + ∆t2 M ⊙ M ⊙ U ℓ ∗ K − S ℓ ,                            (17)
+where ⊙ denotes the Hadamard (element-wise) product, and S ℓ is the source term at time step ℓ. To
+prevent unwanted reflections from the boundaries, a Perfectly Matched Layer (PML) is incorporated.
+Following the approach in the provided content, we introduce auxiliary variables p and z to handle
+the PML (Pasalic & McGarry, 2010). The modified update scheme in the PML region becomes:
+                                                                                
+              U ℓ+1 = 2U ℓ − U ℓ−1 + ∆t2 M ⊙ M ⊙ ∇2 U ℓ + ∇pℓ + z ℓ − S ℓ ,
+                 pℓ = a ⊙ pℓ−1 + b ⊙ ∇x U ℓ ,                                                    (18)
+                   ℓ         ℓ−1           2   ℓ        ℓ
+                                                            
+                 z =a⊙z            + b ⊙ ∇ U + ∇x p             ,
+where a and b are spatially varying coefficients within the PML, and ∇x denotes the spatial deriva-
+tive in the x-direction. The time-stepping scheme can be interpreted as a recurrent process, anal-
+ogous to a recurrent neural network (RNN), where each time step corresponds to a layer in the
+network (Sun et al., 2020; Simeoni et al., 2019).
+B.4 WAVE - BASED NTK FOR 1D FWI EXPERIMENTAL SETTING
+Our experiments are based on the following one-dimensional acoustic wave equation:
+                               m(x)∂t2 u(x, t) − ∂x2 u(x, t) = s(x, t),                          (19)
+where x ∈ R denotes the spatial coordinate, t ∈ R represents time, m is the velocity model, u is
+the wavefield, and s is the source function. The target velocity model is constructed from trace data
+extracted from the Marmousi model with a grid spacing of 15 m (see Fig. 12 (a)). The seismic
+observations are generated using a finite-difference method (see Fig. 12 (b)). An 8 Hz Ricker
+wavelet is employed as the source function, with a time step of 1.9 ms and 1000 samples (see Fig.
+12 (c)).
+
+
+
+
+     Figure 12: (a) 1D velocity model. (b) observed seismic data. (c) Ricker source function.
+
+To compare the eigenvalue decay across different FWI methods, including ADFWI, INR-based FWI,
+MPE-FWI, LR-FWI, and IG-FWI. We compute the wave-based NTK for CR-FWI using a network
+width of 100,000 and a wave kernel for ADFWI. Furthermore, we test the wave-based NTK relative
+nuclear norm variation at initialization and during the training process, i.e.,
+                                           ||ΘNTK          NTK
+                                              wave (τ ) − Θwave (0)||
+                                ∆Θ(τ ) ≜                              ,                          (20)
+                                                 ||Θwave (0)||
+                                                      NTK
+
+over the network’s width, for 10 independent experiments. The results are presented in Fig. 5.
+B.5 U SAGE OF LLM S
+We employed large language models solely for the purpose of polishing and refining the writing
+of this paper. The models assisted with improving grammatical accuracy, enhancing sentence flu-
+ency, and ensuring clarity of expression, while strictly preserving the original technical content and
+scientific meaning. All ideas, methodologies, results, and conclusions remain entirely our own.
+
+
+                                                   21
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6 M AIN EXPERIMENTAL RESULTS
+B.6.1 E VALUATION METRICS
+Table 4: Comparisons between different conventional FWI (i.e., ADFWI, ADFWI-TV, WECI-FWI,
+and MS-FWI) and CR-FWI (i.e., IFWI, WinFWI, LR-FWI, MPE-FWI, and IG-FWI) methods across
+different evaluation metrics for the 2D Marmousi model. Here, bold represents the best evaluation
+result, while underline represents the second-best evaluation
+                                  Initial velocity model        Gaussian noise       Frequency cutoff   Shots number
+          Metric    Method
+                                Smooth    Linear    Constant     4σ0       8σ0        4 Hz     6 Hz     9 shots   5 shots
+                    ADFWI       0.6260    0.2689     0.0549     0.2167    0.1401     0.2594   0.2287    0.2499    0.1969
+                    ADFWI-TV    0.5466    0.2735     0.1503     0.2628    0.2456     0.2607   0.2462    0.2718    0.2289
+                    WECI-FWI    0.4239    0.3638     0.0220     0.1193    0.0948     0.3581   0.3475    0.3240    0.2926
+                    MS-FWI      0.7093    0.6559     0.0952     0.5274    0.4218     0.5298   0.4193    0.5362    0.4798
+          SSIM ↑    IFWI        0.6510    0.6173     0.5252     0.5410    0.4607     0.5587   0.5124    0.5802    0.4234
+                    WinFWI      0.6498    0.5982     0.5617     0.5220    0.3960     0.5442   0.4514    0.5938    0.5002
+                    LR-FWI      0.6853    0.6662     0.5917     0.5714    0.5079     0.6414   0.6166    0.6250    0.5665
+                    MPE-FWI     0.7177    0.3681     0.1888     0.3620    0.3008     0.2828   0.2723    0.2837    0.2745
+                    IG-FWI      0.7183    0.7130     0.6773     0.6182    0.6048     0.6774   0.6650    0.7030    0.6808
+                    ADFWI       0.2132    0.4921     1.1522     0.4965    0.5422     0.4965   0.4975    0.4831    0.4730
+                    ADFWI-TV    0.2449    0.3780     0.9386     0.3831    0.3875     0.3807   0.3764    0.3741    0.3547
+                    WECI-FWI    0.2977    0.3347     1.2537     0.5414    0.6366     0.3320   0.3220    0.3338    0.3337
+                    MS-FWI      0.1683    0.2651     1.1313     0.2824    0.3547     0.3556   0.4198    0.2867    0.3325
+          MSE ↓     IFWI        0.1907    0.2375     0.9474     0.3072    0.3374     0.3040   0.3358    0.2857    0.3483
+                    WinFWI      0.2013    0.2917     0.4689     0.3042    0.3514     0.3029   0.3460    0.2401    0.3239
+                    LR-FWI      0.1638    0.1733     0.2893     0.2218    0.2553     0.1998   0.2276    0.2064    0.2641
+                    MPE-FWI     0.1427    0.3755     2.2266     0.3271    0.2990     0.3322   0.3320    0.3338    0.3393
+                     IG-FWI     0.1423    0.1534     0.2961     0.2124    0.2151     0.1653   0.1846    0.1602    0.1654
+                    ADFWI       0.2682    0.4571     0.8866     0.4678    0.5084     0.4626   0.4757    0.4708    0.4555
+                    ADFWI-TV    0.2800    0.3979     0.8074     0.4028    0.4084     0.4005   0.4034    0.4077    0.3874
+                    WECI-FWI    0.3389    0.3628     0.9170     0.5719    0.6251     0.3475   0.3605    0.3726    0.3817
+                    MS-FWI      0.2201    0.2719     0.8590     0.3314    0.3917     0.2941   0.3996    0.3146    0.3435
+          MAE ↓     IFWI        0.2468    0.2786     0.5568     0.3224    0.3504     0.3165   0.3415    0.3053    0.3737
+                    WinFWI      0.2480    0.3097     0.3979     0.3227    0.3633     0.3182   0.3536    0.2744    0.3331
+                    LR-FWI      0.2278    0.2472     0.3149     0.2841    0.3090     0.2495   0.2679    0.2561    0.2921
+                    MPE-FWI     0.2114    0.3977     1.1312     0.3649    0.3514     0.3791   0.3833    0.3811    0.3863
+                    IG-FWI      0.2109    0.2196     0.2989     0.2644    0.2706     0.2312   0.2368    0.2243    0.2307
+
+
+
+Table 5: Comparisons between conventional FWI (i.e., ADFWI, ADFWI-TV, WECI-FWI, and MS-
+FWI) and CR-FWI (i.e., IFWI, WinFWI, LR-FWI, MPE-FWI, and IG-FWI) methods for the other
+challenging models. Here, bold represents the best evaluation result, while underline represents the
+second-best evaluation.
+                                    2004 BP model                       Salt model                Overthrust model
+         Metric    Method
+                               Smooth    Linear    Constant Smooth       Linear    Constant Smooth      Linear    Constant
+                   ADFWI       0.5104    0.2391    0.0920      0.1717    0.3770      0.2334   0.7334    0.4699    0.0324
+                   ADFWI-TV    0.5042    0.2573    0.0963      0.2778    0.5272      0.3315   0.4497    0.3098    0.1035
+                   WECI-FWI    0.4392    0.2111    0.0973      0.3290    0.2525      0.0877   0.4958    0.1413    0.0931
+                   MS-FWI      0.6872    0.4157    0.0493      0.2590    0.4515      0.3020   0.7033    0.6802    0.0456
+         SSIM ↓    IFWI        0.6168    0.5807    0.5533      0.5882    0.5177      0.4189   0.7124    0.6849    0.6398
+                   WinFWI      0.5926    0.3579    0.6362      0.5507    0.5205      0.5123   0.6946    0.6737    0.6148
+                   LR-FWI      0.7003    0.4992    0.4868      0.4222    0.4944      0.4636   0.7305    0.7005    0.6985
+                   MPE-FWI     0.6351    0.3221    0.0968      0.1554    0.5053      0.2100   0.6571    0.4506    0.0557
+                   IG-FWI      0.7316    0.6459    0.7274      0.5910    0.5265      0.5138   0.7272    0.6985    0.6501
+                   ADFWI       0.1003    0.2568    0.4281      0.6462    0.3292      0.6337   0.0592    0.1902    1.3364
+                   ADFWI-TV    0.0995    0.2593    0.4259      0.5041    0.2143      0.5318   0.1154    0.1985    1.3142
+                   WECI-FWI    0.0951    0.2748    0.3847      0.3032    0.9294      1.0293   0.1182    0.2987    1.5526
+                   MS-FWI      0.0672    0.1631    0.4667      0.5358    0.3271      0.9234   0.0752    0.0797    1.0802
+         MSE ↓     IFWI        0.0719    0.1143    0.1412      0.1201    0.2214      0.7412   0.0683    0.0804    0.6432
+                   WinFWI      0.0812    0.1827    0.1083      0.1223    0.2241      0.3549   0.0682    0.0932    0.5738
+                   LR-FWI      0.0481    0.1193    0.1248      0.2785    0.2143      0.2368   0.0548    0.0724    0.1592
+                   MPE-FWI     0.0586    0.3387    1.6024      0.8534    0.2942      1.1008   0.0613    0.2113    1.2887
+                   IG-FWI      0.0521    0.1057    0.0843      0.1181    0.1997      0.1883   0.0587    0.0762    0.5724
+                   ADFWI       0.1987    0.3697    0.5690      0.6168    0.4024      0.5412   0.1710    0.3182    0.9107
+                   ADFWI-TV    0.2006    0.3672    0.5685      0.5051    0.3071      0.4852   0.2653    0.3479    0.9184
+                   WECI-FWI    0.2024    0.4064    0.5045      0.3791    0.6999      0.7845   0.2536    0.4314    1.0064
+                   MS-FWI      0.1595    0.2717    0.5612      0.5007    0.3794      0.5705   0.1802    0.2118    0.8087
+         MAE ↓     IFWI        0.1637    0.2230    0.2030      0.2129    0.3200      0.5210   0.2239    0.2028    0.4672
+                   WinFWI      0.1883    0.3018    0.2061      0.2152    0.3284      0.3325   0.2392    0.1962    0.4564
+                   LR-FWI      0.1322    0.2128    0.2295      0.3272    0.3011      0.2962   0.1671    0.1907    0.2793
+                   MPE-FWI     0.2099    0.3918    0.6462      0.6667    0.3734      0.6513   0.1974    0.3392    0.8742
+                   IG-FWI      0.1386    0.2085    0.1839      0.2118    0.3096      0.2700   0.1702    0.1870    0.4088
+
+
+
+
+                                                               22
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.2   I NVERSION RESULTS OF M ARMOUSI MODEL WITH DIFFERENT INITIAL MODELS
+
+
+
+
+Figure 13: Conventional FWI, INR-based FWI, and our proposed FWI methods (bold) performance
+comparison using different initial velocity models (i.e., smooth, linear, and constant) on the 2D
+Marmousi model.
+
+
+
+
+                                               23
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.3   I NVERSION RESULTS OF M ARMOUSI MODEL WITH DIFFERENT SEISMIC DATA
+        QUALITY
+
+
+
+
+Figure 14: Conventional FWI, INR-based FWI, and our proposed FWI methods (bold) performance
+comparison using a linear initial model with different seismic data quality on the 2D Marmousi
+model.
+
+
+
+
+                                               24
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.4   I NVERSION RESULTS OF OVERTHRUST MODEL WITH DIFFERENT INITIAL MODELS
+
+
+
+
+Figure 15: Conventional FWI, INR-based FWI, and our proposed FWI methods (bold) performance
+comparison using different initial velocity models (i.e., smooth, linear, and constant) on the 2D
+SEG/EAGE Overthrust model.
+
+
+
+
+                                               25
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.5   I NVERSION RESULTS OF S ALT MODEL WITH DIFFERENT INITIAL MODELS
+
+
+
+
+Figure 16: Conventional FWI, INR-based FWI, and our proposed FWI methods (bold) performance
+comparison using different initial velocity models (i.e., smooth, linear, and constant) on the 2D
+SEG/EAGE Salt model.
+
+
+
+
+                                               26
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.6   I NVERSION RESULTS OF 2004 BP MODEL WITH DIFFERENT INITIAL MODELS
+
+
+
+
+Figure 17: Conventional FWI, INR-based FWI, and our proposed FWI methods (bold) performance
+comparison using different initial velocity models (i.e., smooth, linear, and constant) on the 2004
+BP model.
+
+
+
+
+                                                27
+Published as a conference paper at ICLR 2026
+
+
+
+
+B.6.7   G ENERATED VELOCITY CORRESPONDING TO DIFFERENT ITERATIONS
+
+
+
+
+Figure 18: Generated velocity model corresponding to different iterations with conventional FWI,
+IFWI, MPE-FWI, IG-FWI, and LR-FWI using Marmousi model
+
+
+
+
+Figure 19: Generated velocity model corresponding to different iterations with conventional FWI,
+IFWI, MPE-FWI, IG-FWI, and LR-FWI using Overthrust model
+
+
+
+
+Figure 20: Generated velocity model corresponding to different iterations with conventional FWI,
+IFWI, MPE-FWI, IG-FWI, and LR-FWI using Salt model
+
+
+
+
+                                               28
+Published as a conference paper at ICLR 2026
+
+
+
+
+Figure 21: Generated velocity model corresponding to different iterations with conventional FWI,
+IFWI, MPE-FWI, IG-FWI, and LR-FWI using 2004 BP model
+
+
+C     A DDITIONAL E XPERIMENTS
+In this Appendix, we provide additional numerical results, including a more realistic 2014 Chevron
+blind test, a 3D SEG/EAGE Overthrust model test with computational challenges, and comparisons
+with data-driven method on the OpenFWI dataset. Finally, we present two failure cases using our
+proposed methods.
+
+C.1   2014 C HEVRON BLIND TEST AND RESULTS
+To further validate our proposed IG-FWI method on more realistic field data and consider the in-
+version crime problem, we applied multiscale ADFWI (Liu et al., 2025a; Fichtner et al., 2013),
+INR-based FWI (Sun et al., 2023a), and IG-FWI to the realistic Chevron 2014 benchmark dataset.
+This 2D marine towed-streamer dataset with a
+maximum offset of 8 km, provided by Chevron
+Oil Company for FWI, was modeled using a
+2D isotropic, elastic wave equation with a free
+surface at the top and absorbing boundaries on
+the sides and the bottom. It contains noise,
+with the signal predominating above 3 Hz. We
+used 146 shots with a spacing of 150 m, where
+each was recorded by 321 receivers spaced 25
+m apart, all at a depth of 15 m. The veloc-
+ity model was discretized at 25 m in both di-
+rections. Data were recorded at a 4-ms time
+step over 8 seconds. The source wavelet and
+its spectrum are shown in Fig. 22. A 1D initial
+velocity model and a well log were provided,
+but the true model was withheld.
+For the multiscale FWI method, we adopt five
+frequency bands ranging from 3 Hz to 11 Hz
+                                                  Figure 22: (a) Initial source wavelet and (b) its
+with a 2 Hz interval and 50 iterations. The rel-
+                                                  corresponding normalized spectrum, as provided
+evant hyperparameters for both the INR-based
+                                                  by Chevron Oil Company for FWI.
+FWI and our proposed IG-FWI methods are
+set as described in Appendix B and run 500
+epochs. Here, we produce the synthetic seismic data using the acoustic wave equation rather than the
+isotropic and elastic wave equation, which avoids the inversion crime problem. Inversion results on
+the Chevron blind test data (see Fig. 23) show that all methods accurately recover the shallow struc-
+tures. However, challenges emerge at greater depths. For instance, velocity profiles (see Fig. 23)
+indicate that the obtained model aligns well with well-log data from 1 km to 2.5 km, though some
+discrepancies appear below 2.0 km. Despite these difficulties, IG-FWI delivers superior performance
+compared to both multiscale FWI and INR-based FWI. Because the true model was unknown, we
+
+
+                                                  29
+Published as a conference paper at ICLR 2026
+
+
+
+
+extensively assessed the inversion performance by comparing common-source shot gathers, shown
+in Fig. 23 Right (b). This improvement can be attributed to the suitable eigenvalue decay of IG-FWI,
+thereby enhancing the stability and accuracy of the inversion.
+
+
+
+
+Figure 23: Inversion Results of 2014 Chevron blind test model. Left: (a) 2014 Chevron initial
+velocity model. (b) Inversion results using multiscale ADFWI (Fichtner et al., 2013; Liu et al.,
+2025a). (c) Inversion results using INR-based FWI (Sun et al., 2023b). (d) Inversion results using
+our proposed IG-FWI; Right: (a) Velocity profiles of the well log, initial model, and inverted models
+using different FWI methods. (b) Comparison of a common-source shot gather between the true and
+modeled records. Here I denotes simulated data and O denotes the observed data.
+
+
+C.2   3D SEG/EAGE OVERTHRUST MODEL TEST
+Considering the computational time and memory challenges of 3D domains, we test conventional
+FWI, INR-based FWI, and our proposed CRFWI methods on the 60 × 160 × 160 modified 3D
+SEG/EAGE Overthrust velocity model (50 m grid spacing) with 36 shots deployed at 1.2 km in-
+tervals (12 Hz Ricker wavelet). Receivers are placed at 50 m intervals on the surface, and wave
+propagation uses 2.5 ms time steps and 1000 samples. Here, we maintain the same hyperparameters
+and neural structure as 2D FWI settings. Moreover, we utilize the finite difference method to solve
+the 3D acoustic wave equation, and the representative observed seismic data are shown in Fig. 24.
+
+
+
+
+              Figure 24: (a) 3D acquisition systems. (b) Representative seismic data.
+
+To alleviate the computational burden of the 3D domain, we introduce some advanced techniques
+like checkpointing (Anderson et al., 2012), gradient accumulation (Simeoni et al., 2019), and ran-
+dom mini-batch strategy (van Herwaarden et al., 2020). Hence, our proposed CRFWI methods can
+be implemented in one RTX 3090 GPU to conduct the 3D FWI experiments. The inversion results
+are shown in Fig. 25 using a smooth initial velocity model with 500 iterations. We can see that our
+proposed CR-FWI methods achieve more robust and high-precision inversion results. Moreover, we
+provide a detailed comparison of computational resources, as shown in Tab. 6. We can see that
+our proposed LR-FWI and IG-FWI can reduce the memory usage of the continuous representation
+
+
+                                                 30
+Published as a conference paper at ICLR 2026
+
+
+
+
+compared to the existing INR-based CRFWI method, which is attributed to the decoupling low-
+rank representation in LR-FWI and the compact hash representation in IG-FWI. These results show
+that our proposed CR-FWI methods do not impose additional computational burden compared with
+conventional FWI methods.
+
+Table 6: Performance comparison of different FWI methods on 3D Overthrust model. Here, bold
+represents the best evaluation result, while underline represents the second-best evaluation.
+              Method Normalized MSE ↓          SSIM ↑ Memory (GB) Time (s/it)
+              ADFWI      0.1469                0.5576    15.89      13.82
+              IFWI       0.1302                0.4634    30.61      15.08
+              IG-FWI     0.1151                0.5729    22.84      14.61
+              LR-FWI     0.0968                0.5914    16.01      14.09
+
+
+
+
+Figure 25: 3D SEG/EAGE Overthrust model test using a smooth initial model. (a) Ground truth.
+(b) Smooth initial model. (c) ADFWI. (d) INR-based FWI. (e) IG-FWI. (f) LR-FWI.
+
+C.3   C OMPARISONS WITH DATA - DRIVEN FWI
+We evaluate our proposed CRFWI approaches with the data-driven FWI method InversionNet (Wu &
+Lin, 2019b) on the synthetic OpenFWI dataset (Deng et al., 2022), a large-scale benchmark designed
+for seismic imaging tasks. Specifically, we predict velocity models, including FlatVel, FlatFault,
+CurveVel, CurveFault, and Style, from noisy seismic data (see Fig. 26) using pre-trained models
+provided by the original InversionNet. We compare the performance of conventional FWI, INR-
+based FWI, and our proposed LR-FWI and IG-FWI methods in inverting velocity models from the
+same noisy seismic data. The inversion results indicate that both LR-FWI and IG-FWI can achieve
+superior performance compared to some supervised CNN-based approaches (see Figs. 27 to 31).
+While supervised frameworks suffer from generalization issues caused by the distribution shift be-
+tween synthetic training data (e.g., from OpenFWI) and complex field models (e.g., Marmousi and
+Overthrust models), their computational speed remains highly appealing. A promising pathway is
+to embed such methods within our proposed CR-FWI framework to rapidly generate initial models,
+which we plan to explore in future work.
+
+
+                                                31
+Published as a conference paper at ICLR 2026
+
+
+
+
+                  Figure 26: OpenFWI datasets and noisy seismic data input.
+
+
+
+
+          Figure 27: Inversion results on FlatVel dataset using different FWI methods.
+
+
+
+
+                                               32
+Published as a conference paper at ICLR 2026
+
+
+
+
+         Figure 28: Inversion results on FlatFault dataset using different FWI methods.
+
+
+
+
+         Figure 29: Inversion results on CurveVel dataset using different FWI methods.
+
+
+
+
+                                               33
+Published as a conference paper at ICLR 2026
+
+
+
+
+        Figure 30: Inversion results on CurveFault dataset using different FWI methods.
+
+
+
+
+           Figure 31: Inversion results on Style dataset using different FWI methods.
+
+
+
+
+                                               34
+Published as a conference paper at ICLR 2026
+
+
+
+
+C.4 T WO FAILURE FWI CASES FOR CR-FWI
+Here, we present two failure cases using our proposed methods using the Canadian Foothills model
+with irregular topography (See Fig. 32) and the Overthrust model with a near-surface low-speed
+layer (See Fig. 33). The performance degradation in these challenging scenarios can be attributed
+to complex wavefield propagation patterns (Yang et al., 2025) that our current velocity parameteri-
+zation struggles to accurately capture, which guide our subsequent algorithm design and integration
+with existing seismic techniques (e.g., illumination compensation techniques) in future research.
+
+
+
+
+     Figure 32: Inversion results on the Canadian Foothills model with irregular topography
+
+
+
+
+    Figure 33: Inversion results on the Overthrust model with a near-surface low-speed layer
+C.5 C ONTRIBUTION TO SEISMIC COMMUNITY
+Our theoretical analysis not only explain the underlying mechanism of CRFWI, but also provide
+a methodology of continuous representation structure design. For instance, we can develop more
+novel hybrid CR-FWI method by replacing the tiny INR in IG-FWI with other representation, e.g.,
+a low-rank representation (termed LRG-FWI). Here, we provide experiments using the Marmousi,
+Salt and Overthrust models with a constant initial model using LRG-FWI (see Fig. 34 and Tab. 7).
+We see that this novel CR-FWI achieves high-precision inversion results and achieves performance
+comparable to that of IG-FWI .
+
+
+
+
+                      Figure 34: Inversion results using LRG-FWI method.
+
+
+
+                Table 7: Comparisons with LRG-FWI and other CR-FWI methods.
+               Method             MPE-FWI LR-FWI LRG-FWI IG-FWI
+               Marmousi (MSE ↓)    2.2266  0.2893 0.1995  0.2961
+               Overthrust (MSE ↓)  1.2887  0.1592 0.1354  0.5724
+               Salt body (MSE ↓)   1.1008  0.2368 0.2179  0.1883
+
+
+
+
+                                                35
+Published as a conference paper at ICLR 2026
+
+
+
+
+T HEORETICAL P ROOF
+
+Next, we present the proofs of the main theorems introduced in this paper. The overall structure
+of the proofs is illustrated in Fig. 35. We begin with preliminary foundations, including the con-
+
+
+
+
+                          Figure 35: Framework of our theoretical proof.
+
+vergence properties of the standard Neural Tangent Kernel, regularity conditions for hyperbolic
+initial-boundary problems, and the formulation of the evaluation equation. Subsequently, the proof
+of Theorem 4.1 is structured around key lemmas such as the Lipschitz continuity of the Green’s
+function and the sensitivity kernel, supported by the continuous mapping theorem. This section also
+establishes the convergence of the wave-based NTK during training and at initialization, alongside
+distributional convergence of the sensitivity kernel. The final part focuses on eigenvalue compar-
+isons, proposing and applying a spectral comparison theorem to demonstrate several inequalities
+regarding eigenvalues under different parameter settings, as stated in Theorems 4.2, 5.1, and 5.2.
+
+
+D     P RELIMINARY
+D.1   N OTATIONS
+We denote scalars, vectors, and matrices by x, x, and X, respectively. The spatial domain is repre-
+sented as an open set U ⊂ Rd , with boundary ∂U , and the space-time domain as UT = U × [0, T ).
+Scalar-valued and vector-valued functions are denoted by u : U → R and u : U → Rm , respec-
+tively. The first and second derivatives of a function σ(·) are denoted by σ ′ (·) and σ ′′ (·). The
+gradient of a function f (w, x) with respect to w is written as ∇w f (w, x) ∈ Rd . For function
+spaces, C k (U ) refers to the space of k-times continuously differentiable functions, and Lp (U ) de-
+notes the Lebesgue space of p-integrable functions, where 1 ≤ p ≤ +∞. Regarding norms, for
+vectors, ∥ · ∥ and ∥ · ∥∞ represent the Euclidean norm and the infinity norm, respectively; for matri-
+ces, ∥ · ∥ and ∥ · ∥F denotes the spectral norm and the Frobenius norm. For functions, the Lp -norm
+and the essential supremum norm are denoted by ∥ · ∥Lp (U ) and ∥ · ∥L∞ (U ) , respectively.
+
+D.2   S TANDARD NTK THEORY
+Assumption D.1. The neural network Fθ defined in equation 5 satisfies the following properties:
+1. Parameter boundedness: There exists a constant C > 0, independent of the hidden layer width
+n, such that the network parameters remain uniformly bounded:
+                                         sup ∥θ(τ )∥∞ ≤ C.
+                                          τ
+
+2. Smoothness of activation function: The activation function σ belongs to C k+1 (R) for some
+k ≥ 2, and there exists a constant C > 0 such that for any scalar input x ∈ R,
+
+                                      max sup σ (i) (x) ≤ C.
+                                    0≤i≤k+1 x∈R
+
+Remark D.1. This is a common technical condition in related literature (Wang et al., 2022).
+
+
+                                                  36
+Published as a conference paper at ICLR 2026
+
+
+
+
+Next, we summarize prior theoretical results concerning the standard NTK. Consider a neural net-
+work or, generally, a machine learning model fτ (x, θ) with learnable parameters θ ∈ Rp , like
+equation 5. The empirical NTK is defined as the inner product of the gradients of the network’s
+output w.r.t. all of its parameters. Denoted by Kτ (x, x′ ; θ) : Rd × Rd → R, it is given by:
+                                                                       Xp
+                                                                           ∂fτ (x, θ) ∂fτ (x′ , θ)
+             Kτ (x, x′ ; θ) = ⟨∇θ fτ (x, θ), ∇θ fτ (x′ , θ)⟩ =                       ·             .         (21)
+                                                                       i=1
+                                                                             ∂θi         ∂θi
+
+Under the infinite-width limit, the empirical NTK converges to a deterministic kernel K(x, e      x′ ) that
+remains constant throughout training, a phenomenon referred to as the “lazy training” regime.
+Theorem D.1 (Convergence Property of Standard NTK). Consider a neural network fτ (x, θ)
+of width n like equation 5, under Assumption D.1. Suppose the parameters θ(0) are initialized as
+i.i.d. draws from N (0, 1). Then, as the width n → ∞, the empirical NTK Kτ (x, x′ ; θ) converges in
+                                       e
+probability to a deterministic kernel K(x,  x′ ), both at initialization and during training, i.e.,
+                                                             eP
+                                           Kτ (x, x′ ; θ) −→ K(x, x′ ).
+Moreover, this convergence is uniform over all input pairs (x, x′ ) and all time points τ ≥ 0. Specif-
+ically, denote θ0 as initial parameters, under certain regularity conditions, with high probability,
+                                                                                 P
+                              sup sup |Kτ (x, x′ ; θ) − K(x, x′ , θ0 ))| −→ 0,
+                              x,x′ τ ≥0
+
+         P
+where −→ denotes convergence in probability.
+Remark D.2. The proof can be found in (Jacot et al., 2018). This theorem elucidates the fun-
+damental concept of the lazy training regime. The convergence of the empirical NTK to a static,
+                    e implies that the function fτ (x, θ) evolves in a manner asymptotically equiv-
+deterministic limit K
+alent to a linear model in the feature space defined by the gradient at initialization. Consequently,
+the training dynamics of an infinitely wide neural network under gradient descent are governed by
+                         e simplifying the analysis of its convergence and generalization.
+the deterministic kernel K,
+
+D.3 H YPERBOLIC PARTIAL DIFFERENTIAL EQUATION THEORY
+Let Ω ⊂ Rn be a bounded domain with C 2 boundary ∂Ω. Consider the second-order linear partial
+differential operator depending on time t:
+                                  n
+                                  X                              Xn
+                                                         ∂2                     ∂
+                     L(t) = −             aij (t, x)           +     bi (t, x)      + c(t, x),               (22)
+                                 i,j=1
+                                                       ∂xi ∂xj   i=1
+                                                                               ∂x i
+
+And the hyperbolic initial-boundary value problem:
+                     2
+                    ∂t u(t, x) + L(t)u(t, x) = f (t, x),                  x ∈ Ω, t > 0,
+                      u(t, x) = 0,                                         x ∈ ∂Ω, t > 0,                    (23)
+                    
+                      u(0, x) = φ(x), ∂t u(0, x) = ψ(x),                   x ∈ Ω.
+Next, we consider the regularity for hyperbolic initial-boundary value problems in equation 23.
+Theorem D.2 (Regularity for Hyperbolic Initial-Boundary Value Problems). Assume the co-
+efficients satisfy aij , ∂t aij , ∂t2 aij ∈ C 1 (ΩT ) (i, j = 1, 2, . . . , n) and bi , ∂t bi , c, ∂t c ∈ L∞ (ΩT )
+(i = 1, 2, . . . , n). There exists θ > 0 such that for all (t, x) ∈ [0, T ] × Ω and ξ ∈ Rn ,
+                                           X
+                                                aij (t, x)ξi ξj ≥ θ|ξ|2 ,
+                                             i,j
+
+and that the source and boundary functions satisfy:
+                   f ∈ H 1 ([0, ∞), L2 (Ω)),            φ ∈ H 2 (Ω) ∩ H01 (Ω),       ψ ∈ H01 (Ω).
+Let u be a weak solution of (4.4.20). Then:
+                                     ∞           2         1
+                              u ∈ L ([0, ∞), H (Ω) ∩ H0 (Ω)),
+                                        ∞           1
+                                ∂ u ∈ L ([0, ∞), H0 (Ω)),                                                    (24)
+                               t2
+                                ∂t u ∈ L∞ ([0, ∞), L2 (Ω)),
+
+
+                                                            37
+Published as a conference paper at ICLR 2026
+
+
+
+
+and the following estimate holds for all T > 0:
+                ∥u∥L∞ ([0,T ],H 2 (Ω)) + ∥∂t u∥L∞ ([0,T ],H 1 (Ω)) + ∥∂t2 u∥L∞ ([0,T ],L2 (Ω))
+                                                                                            
+                           ≤ C(T ) ∥f ∥H 1 ((0,T ),L2 (Ω)) + ∥φ∥H 2 (Ω) + ∥ψ∥H 1 (Ω) ,
+where C(T ) > 0 is a constant depending on T and the coefficients of L(t).
+
+Proof. This proof can be found in (Cui, 2015) and (Evans, 2010).
+Assumption D.2. Let U ⊂ Rd be a bounded domain with C 2 boundary, and let T > 0. Consider
+the acoustic wave equation equation 1. The velocity model m belongs to the admissible set:
+               A = {m ∈ C 1 (Rd ) : 0 < m1 ≤ m(x) ≤ m2 < ∞ for a.e. x ∈ Rd },
+where m1 and m2 are positive constants. The source term sj is assumed to be in H 1 ((0, T ); L2 (U )).
+The domain D (where the receivers are located) is disjoint from the source domain U , i.e., there
+exists a constant δ > 0 such that dist(D, U ) ≥ δ.
+Remark D.3. This assumption can be easily satisfied using an implicit neural representation (Sitz-
+mann et al., 2020) using an activation function with C 1 continuity, such as IFWI (Sun et al., 2023a)
+and WinFWI (Yang & Ma, 2025).
+Proposition D.1 (Regularity for the Acoustic Wave Equation). Under Assumption D.2, consider the
+acoustic wave equation equation 1 with zero initial conditions:
+                                u(0, x) = 0,     ∂t u(0, x) = 0 for x ∈ U.
+Then, for any T > 0, there exists a unique weak solution uj satisfying the regularity properties:
+                                       ∞         2          1
+                             uj ∈ L (0, T ; H (U ) ∩ H0 (U )),
+                                          ∞         1
+                                ∂ u ∈ L (0, T ; H0 (U )),
+                              t2 j
+                                ∂t uj ∈ L∞ (0, T ; L2 (U )),
+and the following energy estimate holds:
+                ∥uj ∥L∞ (0,T ;H 2 (U )) + ∥∂t uj ∥L∞ (0,T ;H 1 (U )) + ∥∂t2 uj ∥L∞ (0,T ;L2 (U ))
+                   ≤ C(T, U, m1 , m2 )∥sj ∥H 1 ((0,T );L2 (U )) .
+
+Proof. We rewrite the acoustic wave equation equation 1 in the form:
+                                           ∂t2 u − Lu = sj (t, x),                                  (25)
+where the spatial operator is Lu = −m2 (x)∆u. This fits the framework of Theorem D.2 with
+coefficients aij (x) = m2 (x)δij ∈ C 1 (UT ), and bi = c = 0. The uniform ellipticity condition is
+satisfied since m(x) ≥ m1 > 0 implies:
+                       d
+                       X
+                              aij (x)ξi ξj = m2 (x)|ξ|2 ≥ m21 |ξ|2       for all ξ ∈ Rd .           (26)
+                      i,j=1
+
+The zero initial conditions satisfy φ = ψ = 0, and the source term sj has the required regularity.
+Applying Theorem D.2 yields the desired regularity and the estimate, where the constant C depends
+on T , the domain U , and the bounds m1 , m2 .
+Remark D.4. This proposition implies that the wavefield uj and its second time derivative ∂t2 uj are
+bounded in the corresponding norms, which is important for subsequent estimates.
+
+E    T HEORETICAL P ROOF
+E.1 P ROOF OF P ROPOSITION 2.1
+Proof. For a fixed data point (x, t), the derivative of the synthetic data uD
+                                                                            syn with respect to the flow
+parameter τ is given by the chain rule:
+                                                       Z
+                  ∂uDsyn (x, t)   ∂G[m(τ )](x, t)          δG(x, t)       ∂m(y)
+                                =                   =               [m] ·        dy.                (27)
+                       ∂τ                ∂τ              U  δm(y)           ∂τ
+
+
+                                                       38
+Published as a conference paper at ICLR 2026
+
+
+
+
+Substituting the gradient flow dynamics from equation 3 into equation 27 yields:
+                            Z
+         ∂uDsyn (x, t)           δG(x, t)           δJ
+                       =−                   [m] ·         [m]dy
+              ∂τ              U   δm(y)           δm(y)
+                            Z                     h Z Z δG(x′ , t′ )
+                                 δG(x, t)                                                       ′ ′i
+                       =−                   [m] ·                        [m] · uD syn   − u D
+                                                                                            obs dt dx dy
+                              U δm(y)                D T δm(y)
+                            Z Z hZ                                           i
+                                            δG(x, t)      δG(x′ , t′ )                            ′ ′
+                       =−                             [m]              [m]dy · uD             D
+                                                                                      syn − uobs dt dx , (28)
+                              D T        U δm(y)           δm(y)
+Here, the last step of the equation is due to Fubini’s theorem, where we assume the integrand is
+absolutely integrable over U × D × T . We now define the wave kernel Θ as the inner product of the
+Fréchet derivatives:
+                                                   Z
+                                     ′ ′               δG(x, t)          δG(x′ , t′ )
+                       Θ ((x, t), (x , t ); m) ≜                [m] ·                 [m]dy.             (29)
+                                                     U δm(y)              δm(y)
+This kernel is symmetric and characterizes the interaction between wavefield perturbations at differ-
+ent data points (x, t) and (x′ , t′ ) due to model changes.
+
+E.2 P ROOF OF P ROPOSITION 3.1
+Proof. For a fixed data point (x, t), the derivative of the synthetic data uD
+                                                                            syn (x, t) with respect to the
+flow parameter τ is given by the chain rule:
+                                                p
+                               ∂uDsyn (x, t)
+                                               X    ∂G[mθ ](x, t) ∂θi
+                                             =                    ·      .                            (30)
+                                    ∂τ         i=1
+                                                         ∂θi         ∂τ
+Substituting the gradient flow dynamics ∂θ     ∂J
+                                        ∂τ = − ∂θi [θ] yields:
+                                           i
+
+
+                                               p
+                              ∂uD
+                                syn (x, t)
+                                              X   ∂G[mθ ](x, t) ∂J
+                                           =−                  ·     [θ].                               (31)
+                                  ∂τ          i=1
+                                                     ∂θi         ∂θi
+The derivative of the cost functional J is given by:
+                           Z Z
+                 ∂J               ∂G[mθ ](x′ , t′ )                                  ′ ′
+                     [θ] =                          · uD      ′ ′        D    ′ ′
+                                                        syn (x , t ) − uobs (x , t ) dt dx .            (32)
+                 ∂θi        D T        ∂θi
+Substituting this back, we obtain:
+                         p                  Z Z                                              
+     ∂dDsyn (x, t)
+                        X   ∂G[mθ ](x, t)              ∂G[mθ ](x′ , t′ )     D       D
+                                                                                         ′ ′
+                   =−                     ·                              · usyn − uobs dt dx
+          ∂τ            i=1
+                                ∂θi           D T            ∂θi
+                        Z Z "X   p
+                                                                         #
+                                    ∂G[mθ ](x, t) ∂G[mθ ](x′ , t′ )                       ′ ′
+                   =−                                ·                     · uD       D
+                                                                               syn − uobs dt dx .       (33)
+                         D T i=1         ∂θi                 ∂θi
+The interchange of the sum and integrals is justified provided the sum converges absolutely. We now
+define the wave-based NTK as the inner product of the parameter gradients:
+                                                  Xp
+                                     ′ ′              ∂G[mθ ](x, t) ∂G[mθ ](x′ , t′ )
+                 Θntk
+                    wave ((x, t), (x  , t ); θ) ≜                  ·                  .         (34)
+                                                  i=1
+                                                         ∂θi             ∂θi
+This kernel can be further expanded by applying the chain rule. The derivative with respect to a
+network parameter is related to the Fréchet derivative with respect to the model m:
+                                          Z
+                          ∂G(x, t)             δG(x, t)         ∂mθ (y)
+                                    [θ] =               [mθ ] ·          dy.                (35)
+                             ∂θi            U   δm(y)            ∂θi
+Substituting this form into the definition of Θntk
+                                                wave gives:
+                   Xp  Z                                  Z                                    
+                             δG(x, t)        ∂mθ (y)                δG(x′ , t′ )       ∂mθ (z)
+         Θntk
+           wave =                     [m θ ]           dy     ·                  [mθ ]         dz
+                   i=1    U δm(y)             ∂θi                 U δm(z)               ∂θi
+                   Z Z                                           p
+                                                                                        !
+                          δG(x, t)       δG(x′ , t′ )           X   ∂mθ (y) ∂mθ (z)
+                =                  [mθ ]              [mθ ] ·                             dydz.         (36)
+                    U U    δm(y)           δm(z)                i=1
+                                                                      ∂θi         ∂θi
+
+
+                                                     39
+Published as a conference paper at ICLR 2026
+
+
+
+
+The term in parentheses is recognized as the standard NTK for the network output mθ :
+                                                   p
+                                                   X ∂mθ (y) ∂mθ (z)
+                                  Kτ (y, z; θ) =                           .                              (37)
+                                                   i=1
+                                                           ∂θi      ∂θi
+
+Therefore, the wave-based NTK is expressed as a double integral of the physical wave kernels cou-
+pled with the neural NTK:
+                                      Z Z
+                         ′ ′               δG(x, t)       δG(x′ , t′ )
+      Θntk
+        wave ((x, t), (x  , t ); θ) =               [mθ ]              [mθ ] · Kτ (y, z; θ)dydz. (38)
+                                       U U δm(y)           δm(z)
+Substituting this back into the evolution equation concludes the proof.
+
+E.3 P ROOF OF T HEOREM 4.1
+To establish the stochastic properties of the wave-based NTK both at initialization and during train-
+ing, we first prove the convergence of the continuous representations under the infinite-width limit.
+We then demonstrate that the wave-based NTK is Lipschitz continuous, and employ the Continu-
+ous Mapping Theorem (Oksendal, 2013) to prove the convergence in distribution of the wave-based
+NTK. Accordingly, we begin by analyzing the initial distribution of the velocity model using a con-
+tinuous representation under the infinite-width assumption.
+Lemma E.1 (Infinite-width Convergence of Neural Networks). Consider a fully-connected deep
+neural network Fθ (x) as defined in equation 5, under Assumption D.1. Suppose the parameters θ
+are initialized according to a proper scaling. Then, as the widths of all hidden layers sequentially or
+jointly, for any finite collection of inputs {x1 , x2 , . . . , xk } ⊂ U , the output function Fθ (x) converges
+in distribution to a zero-mean Gaussian process:
+                                                                  D            
+                                   (Fθ (x1 ), . . . , Fθ (xk )) −→ N 0, Σ ,
+where the covariance matrix Σ has entries Σij = Σ(xi , xj ) given by a deterministic kernel function
+Σ : U × U → R that can be computed recursively through the network’s layers. Consequently,
+the reparameterized velocity model mθ (x) = m0 (x) + Fθ (x) using a continuous representation
+converges in distribution to a Gaussian process GP m0 (x), Σ(x, x′ ) .
+
+Proof. The proof relies on the application of the Central Limit Theorem (CLT) and induction over
+the network’s layers. For a detailed proof, see (Bonfanti et al., 2024b) or (Jacot et al., 2018). Since
+m0 (x) is a deterministic function, adding it to the zero-mean GP Fθ results in a GP with mean
+function m0 and the same covariance kernel Σ.
+
+Next, we prove the continuity of the Green function and the sensitive kernel.
+Lemma E.2 (Lipschitz Continuity of the Green Function). Let Gm denote the fundamental so-
+lution (Green function) associated with the wave operator Lm = ∇2 − m(x)∂t2 . Under Assumption
+D.2, in particular given the lower bound m1 > 0 and the separation δ > 0 between the source re-
+gion U and the receiver region D, the mapping m 7→ Gm |D×T is Lipschitz continuous from L∞ (U )
+to L2 (D × T ), i.e., there exists a constant Lg = Lg (m1 , m2 , δ, D, T ) > 0 such that:
+               ∥Gm1 (·, ·; x0 , t0 ) − Gm2 (·, ·; x0 , t0 )∥L2 (D×T ) ≤ Lg ∥m1 − m2 ∥L∞ (U ) ,
+for any m1 , m2 ∈ A.
+
+Proof. Let m1 , m2 ∈ A be two velocity models and define their difference as ∆m = m1 − m2 .
+Consider the difference of Green functions w(x, t; x0 , t0 ) = Gm1 (x, t; x0 , t0 ) − Gm2 (x, t; x0 , t0 ),
+which satisfies the following wave equation:
+                               Lm1 w(x, t) = ∆m(x)∂t2 Gm2 (x, t; x0 , t0 ).                               (39)
+We apply energy estimates to the wave equation satisfied by w. Define the energy functional:
+                                Z
+                              1                                       
+                     E(t) =           m1 (x)|∂t w(x, t)|2 + |∇w(x, t)|2 dx.                  (40)
+                              2 Rd
+
+
+                                                      40
+Published as a conference paper at ICLR 2026
+
+
+
+
+Differentiating with respect to time and using the wave equation:
+                              Z
+                       dE                                        
+                           =         m1 (x)∂t w∂t2 w + ∇w · ∇∂t w dx
+                       dt        d
+                              ZR
+                                                                        
+                           =         ∂t w(m1 ∂t2 w − ∇2 w) + ∇ · (∂t w∇w) dx
+                                 d
+                              ZR                                                                      (41)
+                           =       [−∂t w · Lm1 w + ∇ · (∂t w∇w)] dx
+                                Rd
+                              Z
+                                                                        
+                           =         −∂t w · (∆m∂t2 Gm2 ) + ∇ · (∂t w∇w) dx.
+                                  Rd
+
+
+Integrating over space Rd and applying the divergence theorem (the boundary term vanishes due to
+finite propagation speed), we have:
+                           Z
+                     dE                                                 
+                        =          −∂t w · (∆m∂t2 Gm2 ) + ∇ · (∂t w∇w) dx
+                     dt      R d
+                              Z                              I
+                        =−           ∂t w · (∆m∂t2 Gm2 )dx +       (∂t w∇w) · nds           (42)
+                                   d                           ∂Rd
+                              ZR
+                        =−           ∂t w · (∆m∂t2 Gm2 )dx.
+                                  Rd
+
+Using the boundedness of ∆m and the Cauchy-Schwarz inequality:
+                                   Z
+                dE
+                    ≤ ∥∆m∥L∞ (U )       |∂t w||∂t2 Gm2 |dx
+                dt                   Rd
+                                   Z               1/2 Z                      1/2
+                                                2                  2        2                         (43)
+                    ≤ ∥∆m∥L∞ (U )         |∂t w| dx              |∂t Gm2 | dx
+                                       Rd                    Rd
+                                   r
+                                       2 p
+                    ≤ ∥∆m∥L∞ (U )            E(t)∥∂t2 Gm2 (·, t; x0 , t0 )∥L2 (Rd ) ,
+                                      m1
+where the last inequality holds due to the energy definition and the lower bound m1 > 0, i.e.,
+                                     Z
+                                                        2
+                                          |∂t w|2 dx ≤     E(t).                               (44)
+                                       Rd              m1
+This gives us the differential inequality:
+                   dp          1
+                      E(t) ≤ √     ∥∆m∥L∞ (U ) ∥∂t2 Gm2 (·, t; x0 , t0 )∥L2 (Rd ) .                   (45)
+                   dt          2m1
+Integrating from t0 to t:
+                 p                                    Z t
+                                 1
+                     E(t) ≤ √        ∥∆m∥L∞ (U )             ∥∂t2 Gm2 (·, s; x0 , t0 )∥L2 (Rd ) ds.   (46)
+                                 2m1                    t0
+
+From the theory of hyperbolic equations and under Assumption D.2, we have the regularity results
+for the Green function Gm2 . For a fixed source point (x0 , t0 ) and away from the singularity, Gm2
+enjoys higher regularity. Specifically, for x ∈ D where dist(D, U ) ≥ δ > 0, we have:
+
+                            ∥∂t2 Gm2 (·, t; x0 , t0 )∥L2 (D) ≤ C1 (δ, m1 , m2 , T0 ).                 (47)
+
+The energy of the wavefield decays sufficiently fast away from the source due to finite propagation
+speed and geometric optics approximations. This ensures that:
+                     Z t
+                         ∥∂t2 Gm2 (·, s; x0 , t0 )∥L2 (Rd ) ds ≤ C2 (m1 , m2 , T0 ).           (48)
+                         t0
+
+
+
+                                                       41
+Published as a conference paper at ICLR 2026
+
+
+
+
+Combining the previous estimates and using Poincaré-type inequalities, we obtain:
+                                       Z t
+           ∥w(·, t; x0 , t0 )∥L2 (D) =     ∂τ w(x, τ )dτ
+                                                   t0
+                                                                        L2 (D)
+                                             Z t
+                                        ≤          ||∂τ w(·, τ )||L2 (D) dτ
+                                              t0                                                          (49)
+                                             Z tr
+                                                 2 p                          p
+                                        ≤            · E(τ )dτ ≜ C3 (D, T0 ) · E(t)
+                                           t0   m1
+                                                         1
+                                        ≤ C3 (D, T ) · √     ∥∆m∥L∞ (D) C2 (m1 , m2 , T0 ).
+                                                         2m1
+Integrating over time t ∈ [0, T0 ]:
+                                       1/2
+                  ∥w∥L2 (D×T ) ≤ T0          sup ∥w(·, t; x0 , t0 )∥L2 (D)
+                                             t∈T
+                                   1/2             1                                                      (50)
+                                ≤ T0 C3 (D, T0 ) √                   C2 (m1 , m2 , T0 )∥∆m∥L∞ (U )
+                                                               2m1
+                                ≜ Lg ∥m1 − m2 ∥L∞ (U ) ,
+                1/2
+              T 0 C3 C2
+where Lg =       √
+                   2m1
+                          depends on m1 , m2 , δ, D, T0 . This completes the proof.
+
+Lemma E.3 (Lipschitz Continuity of the Sensitivity Kernel). Consider the acoustic wave equa-
+tion equation 1 under Assumption D.2. The Fréchet derivative δG(x,t)
+                                                                   δm(y) [m] is Lipschitz continuous
+with respect to the velocity model m. That is, there exists a constant L = L(m1 , m2 , δ, D, T ) > 0
+such that for any m1 , m2 ∈ A:
+                    δG(x, t)         δG(x, t)
+                             [m1 ] −          [m2 ]           ≤ L∥m1 − m2 ∥L∞ (U ) .
+                     δm(y)            δm(y)         L2 (D×T )
+
+
+Proof. The Fréchet derivative of the wavefield uj w.r.t. the model parameter m is given by:
+                                           Z t
+                        δuj (x, t)
+                                   [m] = −     Gm (x, t; y, t′ )∂t2′ uj (y, t′ )dt′ ,                     (51)
+                         δm(y)              0
+where Gm is the Green function for the wave operator. For m1 , m2 ∈ A, consider the difference:
+      δuj          δuj
+          [m1 ] −      [m2 ]
+      δm           δm
+           Z t
+                                                                                                  
+      =−          Gm1 (x, t; y, t′ )∂t2′ uj (m1 )(y, t′ ) − Gm2 (x, t; y, t′ )∂t2′ uj (m2 )(y, t′ ) dt′
+            0                                                                                             (52)
+           Z t                                        Z t
+                                                                                              
+      =−        (Gm1 − Gm2 ) ∂t2′ uj (m1 )dt′ −            Gm2 ∂t2′ uj (m1 ) − ∂t2′ uj (m2 ) dt′
+              0                                            0
+       ≜ Aj + Bj .
+Using the Cauchy-Schwarz inequality and the properties of the wave equation:
+                                Z T
+               ∥Aj ∥L2 (D×T ) ≤      (Gm1 − Gm2 )∂t2′ uj (m1 ) L2 (D) dt′
+                                        0
+                                       Z T                                                                (53)
+                                   ≤          ∥Gm1 − Gm2 ∥L2 (D) ∥∂t2′ uj (m1 )∥L∞ (U ) dt′ .
+                                        0
+From Lemma E.2, we have:
+                             ∥Gm1 − Gm2 ∥L2 (D) ≤ Lg ∥m1 − m2 ∥L∞ (U ) .                                  (54)
+From Proposition D.1, we have:
+                             ∥∂t2′ uj (m1 )∥L∞ (U ) ≤ C1 ∥sj ∥H 1 ((0,T ),L2 (U )) .                      (55)
+
+
+                                                           42
+Published as a conference paper at ICLR 2026
+
+
+
+
+Therefore:
+                   ∥Aj ∥L2 (D×T ) ≤ T Lg C1 ∥sj ∥H 1 ((0,T ),L2 (U )) ∥m1 − m2 ∥L∞ (U ) .               (56)
+Similarly:
+                                   Z T
+               ∥Bj ∥L2 (D×T ) ≤          ∥Gm2 ∥L2 (D) ∥∂t2′ uj (m1 ) − ∂t2′ uj (m2 )∥L∞ (U ) dt′
+                                    0
+                                   Z T                                                                  (57)
+                               ≤         C2 ∥∂t2′ uj (m1 ) − ∂t2′ uj (m2 )∥L∞ (U ) dt′ ,
+                                    0
+where C2 is a bound on ∥Gm2 ∥L2 (D) which exists due to the regularity of the Green function away
+from the source. To estimate ∥∂t2′ uj (m1 ) − ∂t2′ uj (m2 )∥L∞ (U ) , we consider the difference vj =
+uj (m1 ) − uj (m2 ), which satisfies:
+                                  Lm1 vj = (m1 − m2 )∂t2 uj (m2 ).                            (58)
+Using energy estimates for hyperbolic equations and the regularity from Proposition D.1, we obtain:
+                   ∥∂t2′ vj ∥L∞ (U ) ≤ C3 ∥m1 − m2 ∥L∞ (U ) ∥∂t2 uj (m2 )∥L∞ (U ) .           (59)
+Therefore:
+               ∥Bj ∥L2 (D×T ) ≤ T C2 C3 C4 ∥sj ∥H 1 ((0,T ),L2 (U )) ∥m1 − m2 ∥L∞ (U ) ,      (60)
+where C4 is a bound for ∥∂t2 uj (m2 )∥L∞ (U ) . Combining the estimates for Aj and Bj , we obtain:
+                         δuj         δuj
+                             [m1 ] −     [m2 ]           ≤ L∥m1 − m2 ∥L∞ (U ) ,                         (61)
+                         δm          δm        L2 (D×T )
+where L = T (Lg C1 + C2 C3 C4 )∥sj ∥H 1 ((0,T ),L2 (U )) . This completes the proof.
+
+Then, we focus on the convergence of the initial sensitive kernel as the width tends to infinity.
+Proposition E.1 (Sensitivity Kernel Convergence in Distribution). Consider a fully-connected
+neural network Fθ as defined in equation 5, under Assumptions D.1 and D.2. Suppose the param-
+eters θ are initialized with appropriate scaling. Then, as the width n → ∞, the finite-dimensional
+distributions of the sensitivity kernel converge:
+                                                                                                      
+        δG(x1 , t1 )                δG(xk , tk )        D   δG(x1 , t1 )               δG(xk , tk )
+                     [mθ ], . . . ,              [mθ ] −→                [GP], . . . ,              [GP]
+          δm(y1 )                    δm(yk )                 δm(y1 )                    δm(yk )
+For any finite collection of points (xi , ti , yi ) ∈ D × T × U , i = 1, . . . , k, where GP denotes the
+Gaussian process GP(m0 , Σ) from Lemma E.1.
+
+Proof. By Lemma E.1, as the width n → ∞, the finite-dimensional distributions of mθ converge to
+those of GP(m0 , Σ). That is, for any finite set of points {x1 , . . . , xk } ⊂ U ,
+                                                                D
+                                  (mθ (x1 ), . . . , mθ (xk )) −→ N (µ, Σ),                          (62)
+where µ = (m0 (x1 ), . . . , m0 (xk )) and Σij = Σ(xi , xj ). Furthermore, by Lemma E.3, the Fréchet
+derivative operator
+                                                         δG(x, t)
+                                              Φ : m 7→               [m]                             (63)
+                                                          δm(y)
+Is Lipschitz continuous from (L∞ (U ), ∥ · ∥L∞ ) to (L2 (D × T ), ∥ · ∥L2 ). In particular, for any fixed
+finite collection of points (xi , ti , yi ), the mapping
+                                                                                    
+                                          δG(x1 , t1 )              δG(xk , tk )
+                             m 7→                      [m], . . . ,              [m]                 (64)
+                                            δm(y1 )                  δm(yk )
+is continuous from (L∞ (U ), ∥·∥L∞ ) to Rk . Since mθ converges to GP(m0 , Σ) in finite-dimensional
+distributions, and the mapping Φ is continuous, by the continuous mapping theorem for finite-
+dimensional distributions (Billingsley, 2013), we have:
+                                                                                                   
+      δG(x1 , t1 )                δG(xk , tk )        D   δG(x1 , t1 )               δG(xk , tk )
+                   [mθ ], . . . ,              [mθ ] −→                [GP], . . . ,              [GP] . (65)
+       δm(y1 )                     δm(yk )                 δm(y1 )                    δm(yk )
+This completes the proof.
+
+Next, we begin to prove the conclusions (I) and (II) in Theorem 4.1.
+
+                                                       43
+Published as a conference paper at ICLR 2026
+
+
+
+
+E.3.1 P ROOF OF T HEOREM 4.1 ( I )
+Proof. Recall the definition of the wave-based neural tangent kernel from Proposition E.2:
+                                        Z Z
+                          ′ ′
+                                            δG(x, t)       δG(x′ , t′ )
+        Θntk
+         wave  (x, t), (x  , t ); θ   =               [m] ·              [m] · Kτ (y, z; θ)dydz.      (66)
+                                         U U δm(y)           δm(z)
+
+By Lemma 4.1, the standard NTK Kτ (y, z; θ) converges in probability to a deterministic limiting
+                           P e
+                           → K(y,
+kernel, i.e., Kτ (y, z; θ) −        z) as n → ∞. Furthermore, by Proposition E.1, the following
+sensitivity kernels converge in distribution to the following random process as n → ∞, i.e.,
+ δG(x, t)        D δG(x, t)                              δG(x′ , t′ )              ′ ′
+                                                                             D δG(x , t )
+          [mθ ] −→          [GP(m0 , Σ)]         and                  [mθ ] −→            [GP(m0 , Σ)] (67)
+  δm(y)             δm(y)                                 δm(z)                 δm(y)
+Applying Slutsky’s theorem, we conclude that for each fixed (y, z), the following product:
+                               δG(x, t)         δG(x′ , t′ )
+                                        [mθ ] ·              [mθ ] · Kτ (y, z; θ)                     (68)
+                                δm(y)            δm(z)
+converges in distribution to the following random product under the infinite-width condition:
+                      δG(x, t)                δG(x′ , t′ )                e
+                               [GP(m0 , Σ)] ·              [GP(m0 , Σ)] · K(y, z).                    (69)
+                       δm(y)                   δm(z)
+Since this convergence holds point-wise in (y, z), and the integral is a continuous mapping, we
+apply the continuous mapping theorem to conclude:
+                                        Z Z
+                          ′ ′
+                                     D      δG(x, t)        δG(x′ , t′ )        e
+        Θntk
+          wave (x, t), (x  , t ); θ   −
+                                      →               [GP] ·              [GP] · K(y, z)dydz. (70)
+                                         U U δm(y)            δm(z)
+The limiting expression is a random variable for each fixed input pair (x, t, x′ , t′ ), which we denote
+                          
+   [
+by Θ ntk            ′ ′
+     wave (x, t), (x , t ) . This kernel is non-deterministic due to the randomness in the Gaussian
+process realizations of the sensitivity kernels. Therefore, we have established the point-wise conver-
+gence in distribution, i.e.,
+
+                                     Θntk
+                                           n     D[
+                                                →Θ
+                                      wave τ =0 −             as n → ∞,
+                                                   ntk                                                (71)
+                                                   wave
+
+      [
+where Θ ntk is a random kernel.
+        wave
+
+
+E.3.2 P ROOF OF T HEOREM 4.1 ( II )
+Proof. By Assumption D.1 and the properties of gradient flow, we assume that there exists a se-
+quence τn → ∞ such that mθ(τn ) → m∗ almost surely as n → ∞, where m∗ is a minimizer of the
+loss function. Define the sensitivity kernel operator for fixed (x, t, y) as:
+                                                     δG(x, t)
+                                           Λ(m) =             [m].                                    (72)
+                                                      δm(y)
+By Proposition E.1, Λ is Lipschitz continuous w.r.t the L∞ norm. Thus, since mθ(τn ) → m∗ almost
+surely, we have Λ(mθ(τn ) ) → Λ(m∗ ) almost surely for each fixed (x, t, y). The wave-based NTK
+at time τ and width n is defined as:
+                        Z Z
+              ntk n
+            Θwave τ =          Λ(mθ(τ ) )(x, t, y) · Kτ (y, z) · Λ(mθ(τ ) )(x′ , t′ , z) dy dz, (73)
+                          U    U
+
+where Kτ is the standard NTK for the model output. By Theorem 4.1, at initialization, the standard
+NTK K0 converges uniformly to a deterministic kernel K     e as the width tends to infinity. Moreover,
+in the infinite-width limit, the standard NTK remains constant during training, so Kτ → K      e for all
+τ ≥ 0. Hence, the infinite-width limit of the wave-based NTK at initialization is:
+                          Z Z
+                ntk ∞                                  e
+              Θwave 0 =           Λ(mθ(0) )(x, t, y) · K(y, z) · Λ(mθ(0) )(x′ , t′ , z) dy dz.     (74)
+                           U     U
+
+
+
+                                                       44
+Published as a conference paper at ICLR 2026
+
+
+
+
+Now, consider the difference in the sequence τn , and apply the triangle inequality, we have:
+                                                n                ∞
+                                         Θntk       ntk
+                                          wave τ − Θwave 0           ≤ I1 + I 2 ,                   (75)
+                                                n
+
+where
+             Z Z
+      I1 =                                                              e · Λ(mθ(τ ) )′ dy dz ,
+                       Λ(mθ(τn ) ) · Kτn · Λ(mθ(τn ) )′ − Λ(mθ(τn ) ) · K                           (76)
+                                                                                  n
+               U   U
+             Z Z
+      I2 =                                                         e · Λ(mθ(0) )′ dy dz ,
+                                     e · Λ(mθ(τ ) )′ − Λ(mθ(0) ) · K
+                       Λ(mθ(τn ) ) · K                                                              (77)
+                                               n
+               U   U
+                                                                                     e (by Theorem
+and we use shorthand Λ(mθ(τn ) )′ for Λ(mθ(τn ) )(x′ , t′ , z). For I1 , since Kτn → K
+4.1), and Λ(mθ(τn ) ) is uniformly bounded (by Lemma E.3 and the boundedness of A), we have:
+                                            e ∞ · |U |2 → 0 almost surely as n → ∞.
+             I1 ≤ ∥Λ(mθ(τn ) )∥2∞ · ∥Kτnn − K∥                                                      (78)
+For I2 , define the function f : A → R for fixed (x, t, x′ , t′ ) by:
+                             Z Z
+                    f (m) =                        e
+                                   Λ(m)(x, t, y) · K(y,   z) · Λ(m)(x′ , t′ , z) dy dz.             (79)
+                                U    U
+By the continuity of Λ and the boundedness of U , f is continuous on A. Then:
+                                         I2 = |f (mθ(τn ) ) − f (mθ(0) )|.                          (80)
+Since mθ(τn ) → m∗ almost surely, we have f (mθ(τn ) ) → f (m∗ ) almost surely. At initialization,
+mθ(0) is random with a non-degenerate Gaussian distribution (by the initialization assumption and
+the wide network theory), and f is not constant on A (because the sensitivity kernel depends non-
+trivially on m). Therefore, the set {m ∈ A : f (m) = f (m∗ )} has measure zero. Hence, almost
+surely, f (mθ(0) ) ̸= f (m∗ ), and thus for large n, |f (mθ(τn ) ) − f (mθ(0) )| > 0. Then, combining the
+estimates for I1 and I2 , we conclude that almost surely:
+                                                      n                   ∞
+                                     lim inf Θntk        ntk
+                                              wave τn − Θwave 0               > 0.                  (81)
+                                      n→∞
+This implies that for large n, the supremum over τ satisfies:
+                                                     n                ∞
+                                         sup Θntk       ntk
+                                              wave τ − Θwave 0            > 0,                      (82)
+                                         τ ≥0
+
+since the value at τn is positive. Therefore, almost surely:
+                                                             n            ∞
+                                    lim inf sup Θntk       ntk
+                                                 wave τ − Θwave 0              > 0.                 (83)
+                                    n→∞ τ ≥0
+
+This completes the proof.
+
+E.4 P ROOF OF THE E IGENVALUE D ECAY C OMPARISON T HEOREM
+The spectral properties of the wave kernel and wave-based NTK are fundamental to understanding
+the convergence behavior and robustness in FWI and CR-FWI. To analyze the eigenvalue of the wave
+kernel and the wave-based NTK, we define the Fréchet derivative integral operator Fm : L2 (U ) →
+L2 (D × T ) and its adjoint Fm∗
+                                : L2 (U ) → L2 (D × T ) as follows:
+                   Z                                        Z Z
+                       δG(x, t)                 ∗                  δG(x, t)
+    Fm [h](x, t) =              [m]h(y)dy, Fm     [g](y) =                  [m]g(x, t)dtdx. (84)
+                     U  δm(y)                                D T δm(y)
+
+Moreover, we define the kernel integral operator K : L2 (U ) → L2 (U ) as
+                                              Z
+                                 K[h](y) =       K(y, z)h(z)dz.                                     (85)
+                                                         U
+Hence, the wavefield evolution equation of CR-FWI can be expressed as follows:
+                   ∂dD
+                     syn (x, t)             ∗ D
+                                = Fm ◦ K ◦ Fm [dobs − dD              D      D
+                                                       syn ] ≜ T (K)[dobs − dsyn ].                 (86)
+                       ∂τ
+                        ∗
+where T (K) ≜ Fm ◦ K ◦ Fm denotes the integral operator of wave-based NTK.
+Next, we compare the eigenvalue for two operators of wave-based NTK, i.e., T (K1 ) and T (K2 ).
+
+
+                                                          45
+Published as a conference paper at ICLR 2026
+
+
+
+
+Theorem E.1 (Spectral Comparison Theorem of CR-FWI). For two self-adjoint and positive
+semi-definite operators K1 , K2 : L2 (U ) → L2 (U ), define the wave-based NTK operators as:
+                                                  ∗
+                                      Ti ≜ Fm Ki Fm ,          i = 1, 2.                          (87)
+            ∞
+Let λj (Ti )j=1 denote the eigenvalues of Ti arranged in non-increasing order. If the operators satisfy
+the dominance condition K1 ⪰ K2 (i.e., K1 − K2 is a positive semi-definite operator), then the
+eigenvalues of the corresponding wave-based NTK operators are similarly ordered:
+                              λj (T1 ) ≥ λj (T2 )      for all j = 1, 2, . . . .                  (88)
+
+Proof. The proof follows directly from the min-max principle and the properties of the operators.
+Since K1 ⪰ K2 , we have that K1 −K2 is positive semi-definite. This means that for any g ∈ L2 (U ):
+                                   ⟨K1 g, g⟩L2 (U ) ≥ ⟨K2 g, g⟩L2 (U ) .                          (89)
+                                       ∗
+Now, for any f ∈ L2 (D × T ), let g = Fm f ∈ L2 (U ). Then the quadratic forms of the wave-based
+NTK operators satisfy:
+                                                         ∗
+                           ⟨T1 f, f ⟩L2 (D×T ) = ⟨Fm K1 Fm f, f ⟩L2 (D×T )
+                                                         ∗     ∗
+                                                  = ⟨K1 Fm f, Fm f ⟩L2 (U )
+                                                         ∗     ∗
+                                                  ≥ ⟨K2 Fm f, Fm f ⟩L2 (U )                       (90)
+                                                            ∗
+                                                  = ⟨Fm K2 Fm f, f ⟩L2 (D×T )
+                                                  = ⟨T2 f, f ⟩L2 (D×T ) .
+Thus, we have established that:
+                          ⟨T 1f, f ⟩ ≥ ⟨T 2f, f ⟩      for all f ∈ L2 (D × T ).                   (91)
+By the Courant-Fischer (min-max) theorem, for each j = 1, 2, . . . :
+                                  λj (T 1) =        min        max ⟨T1 f, f ⟩
+                                                V ⊂L2 (D×T ) f ∈V
+                                                  dim(V )=j |f |=1
+
+                                            ≥       min        max ⟨T2 f, f ⟩                     (92)
+                                                V ⊂L2 (D×T ) f ∈V
+                                                  dim(V )=j |f |=1
+
+                                            = λj (T2 ).
+The inequality follows because for any fixed j-dimensional subspace V , we have:
+                                  max ⟨T1 f, f ⟩ ≥           max ⟨T2 f, f ⟩,                      (93)
+                              f ∈V |f |=1                  f ∈V |f |=1
+
+and taking the minimum over all such V preserves the inequality.
+Remark E.1. According to the Spectral Comparison Theorem (Theorem E.1), if two self-adjoint
+positive semi-definite kernel operators satisfy K1 ⪰ K2 , then the eigenvalues of the corresponding
+wave-based neural tangent kernel operators T1 and T2 satisfy λj (T1 ) ≥ λj (T2 ). In particular, both
+the wave kernel Θwave defined in Proposition 2.1 and the wave neural tangent kernel Θntk wave defined
+in Proposition 3.1 can be expressed in the form T (K) as in the theorem, where K corresponds to
+the identity operator Kδ (see the following Proposition E.2) and the neural network’s NTK kernel
+Kτ , respectively. Therefore, if the NTK kernels of two neural networks satisfy Kτ,1 ⪰ Kτ,2 , then
+the eigenvalues of their wave neural tangent kernels will also satisfy the same ordering relation.
+
+To apply Theorem E.1, we need to rewrite the formulation of the wave kernel and prove the self-
+adjoint and positive semi-definite of wave-based NTK.
+Proposition E.2. The wave-based NTK Θntk     wave defined in Proposition 3.1 is symmetric and semi-
+positive definite, under the assumption that NTK Kτ is a symmetric and semi-positive definite kernel.
+
+Proof. We aim to prove that the wave-based neural NTK defined by
+                                    Z Z
+         ntk            ′ ′
+                                        δG(x, t)       δG(x′ , t′ )
+        Θwave (x, t), (x , t ); θ =               [m] ·              [m] · Kτ (y, z; θ)dydz       (94)
+                                     U U δm(y)           δm(z)
+
+
+                                                      46
+Published as a conference paper at ICLR 2026
+
+
+
+
+Symmetry. To show symmetry, we observe that the expression for Θntk                wave is symmetric in (x, t) and
+(x′ , t′ ). Explicitly, interchanging (x, t) and (x′ , t′ ) yields:
+                                             Z Z
+                       ′ ′
+                                                  δG(x′ , t′ )        δG(x, t)
+            Θntk
+              wave (x   , t ), (x, t); θ   =                    [m] ·             [m] · Kτ (y, z; θ)dydz
+                                              U U    δm(y)              δm(z)
+                                             Z Z
+                                                   δG(x, t)          δG(x′ , t′ )
+                                           =                 [m] ·                [m] · Kτ (z, y; θ)dzdy
+                                              U U δm(y)                δm(z)
+                                                             ′ ′
+                                                                       
+                                           = Θntk
+                                              wave (x, t), (x , t ); θ                                        (95)
+where Kτ (y, z; θ) = Kτ (y, z; θ) by the symmetry of Kn .
+Semi-Positive Definiteness. To show semi-positive definiteness, we must verify that for any square-
+integrable function f (x, t), the double integral
+                         ZZ
+                                                          ′ ′
+                                                                        ′ ′          ′ ′
+                    I=         f (x, t) Θntk
+                                           wave (x, t), (x , t ); θ f (x , t )dxdtdx dt
+                         ZZ             h Z Z δG(x, t)           δG(x′ , t′ )
+                       =       f (x, t)                     [m]               [m]
+                                            U U δm(y)              δm(z)
+                                                i
+                         · Kτ (y, z; θ)dydz f (x′ , t′ )dxdtdx′ dt′
+                         Z Z                     Z Z                                    
+                                                                    δG(x, t)
+                       =          Kτ (y, z; θ)             f (x, t)            [m] dx dt
+                           U U                        U ×T            δm(y)
+                           Z Z                        ′ ′
+                                                                          
+                                            ′ ′ δG(x , t )           ′  ′
+                         ·            f (x , t )             [m] dx dt dy dz
+                                                  δm(z)
+                         Z Z U ×T
+                       =          Kτ (y, z; θ) g(y) g(z) dy dz ≥ 0                               (96)
+                           U U
+                RR
+where g(y) ≜ U ×T f (x, t) δG(x,t)
+                                 δm(y) [m] dx dt and Kτ is semi-positive definite. Thus, I ≥ 0, prov-
+          ntk
+ing that Θwave is semi-positive definite.
+Proposition E.3. The wave-based NTK Θntk    wave defined in Proposition 3.1 degrades into the wave
+kernel Θwave defined in Proposition 2.1 without neural representation.
+
+Proof. The proof consists of showing that under the given conditions, the parameter-space inner
+product that defines the wave-based NTK reduces to the model-space inner product that represents
+the wave kernel. The Fréchet derivative of the model mθ w.r.t. the parameters θ at a point z is:
+                                   dmθ (y)     dθ(y)
+                                             =        = δ(y − z).                                 (97)
+                                     dθ(z)      dθ(z)
+This follows because a change in the parameter θ (i.e., the velocity model m) at the point z directly
+and solely affects the model mθ at the point y = z. This wave-based NTK in the model space, Kτ ,
+which measures the inner product of the functional gradients of the model output, is then given by:
+                                       Z
+                                           dmθ (y) dmθ (z)
+                        Kτ (y, z; θ) =              ·         dw
+                                            dθ(w)     dθ(w)
+                                       ZU                                                         (98)
+                                     =     δ(y − w)δ(z − w)dw = δ(y − z).
+                                             U
+The inner product is taken over the parameter space, resulting in the Dirac delta function due to
+the orthogonality of the functional gradients; a perturbation at w affects the output only at w. The
+general definition of the wave-based NTK is an inner product over the parameter space θ:
+                                      Z Z
+            ntk           ′ ′
+                                            δG(x, t)        δG(x′ , t′ )
+         Θwave (x, t), (x , t ); θ =                  [m]                 [m] · Km (y, z; θ)dydz
+                                              δm(y)             δm(z)
+                                      ZU ZU
+                                             δG(x, t)        δG(x′ , t′ )
+                                    =                 [m]                 [m] · δ(y − z)dydz
+                                              δm(y)             δm(z)                            (99)
+                                      ZU U
+                                         δG(x, t)      δG(x′ , t′ )
+                                    =             [m]               [m]dy
+                                       U δm(y)            δm(y)
+                                                                 
+                                    = Θwave (x, t), (x′ , t′ ); m .
+
+
+                                                       47
+Published as a conference paper at ICLR 2026
+
+
+
+
+This completes the proof that the wave-based neural tangent kernel reduces to the standard wave
+kernel when the neural representation is the identity function.
+
+Proposition E.4. Consider the wavefield evolution equation governed by the wave kernel:
+
+                                ∂(uD            D
+                                    syn (τ ) − uobs )
+                                                      = −K(Θ)[uD             D
+                                                                 syn (τ ) − uobs ]
+                                         ∂τ
+                                                                R R                    
+where K(Θ) is an integral operator defined as K(Θ)[u] ≜ D T Θ (x, t), (x′ , t′ ) · u(x′ , t′ )dt′ dx′ .
+                                                         P∞
+Then, K(Θ) has spectral decomposition K(Θ) = k=1 λk ϕk ⊗ ϕk , where {λk }∞             k=1 is a sequence
+                                             ∞
+of non-negative eigenvalues and {ϕk }k=1 forms a complete orthonormal system of eigenfunctions.
+                                                                       ∞
+Define the spectral projection operator Q as Qf ≜ ⟨f, ϕk ⟩k=1 and the diagonal matrix Λ =
+diag(λ1 , λ2 , . . .). Then the evolution of the data residual in the spectral domain satisfies:
+
+                          |Q(uD           D
+                              syn (τ ) − uobs )| = e
+                                                     −Λτ
+                                                         |Q(uD      D
+                                                             obs − usyn (0))|
+
+where the absolute value is understood component-wise.
+
+
+Proof. Let the data residual function e(τ ) = uD           D
+                                               syn (τ ) − uobs , and the evolution equation becomes:
+
+                                         ∂e(τ )
+                                                = −K(Θ)[e(τ )]                                    (100)
+                                          ∂τ
+Since K(Θ) is self-adjoint, compact, and non-negative definite (see Proposition E.2), by the spectral
+theorem for compact self-adjoint operators, there exists aPcomplete orthonormal system {ϕk }∞    k=1
+                                                            ∞
+and non-negative eigenvalues {λk }∞  k=1 such that K(Θ) =   k=1 λk ϕk ⊗ ϕk . Hence, we can expand
+the residual function in this eigen-basis:
+                                                    ∞
+                                                    X
+                                          e(τ ) =         ak (τ )ϕk
+                                                    k=1
+
+where the expansion coefficients are given by ak (τ ) = ⟨e(τ ), ϕk ⟩. The spectral projection operator
+is defined as Qe(τ ) = {ak (τ )}∞
+                                k=1 . Substituting the expansion into equation 100:
+
+          ∞
+                                 "∞              #       ∞                         ∞
+      ∂ X                         X                     X                         X
+             ak (τ )ϕk = −K(Θ)         ak (τ )ϕk = −       ak (τ )K(Θ)[ϕk ] = −       ak (τ )λk ϕk
+     ∂τ
+        k=1                        k=1                      k=1                     k=1
+
+Due to the orthonormality of {ϕk }∞
+                                  k=1 , we obtain the system of ordinary differential equations:
+
+                             dak (τ )
+                                      = −λk ak (τ )       for all k = 1, 2, . . .                 (101)
+                               dτ
+The general solution to equation equation 101 is ak (τ ) = ak (0)e−λk τ . Therefore, the solution
+becomes ak (τ ) = ⟨uD          D
+                    syn (0) − uobs , ϕk ⟩e
+                                           −λk τ
+                                                 . In the spectral domain, we have:
+
+                     Qe(τ ) = {ak (τ )}∞        D          D
+                                       k=1 = {⟨usyn (0) − uobs , ϕk ⟩e
+                                                                       −λk τ ∞
+                                                                            }k=1
+                             = −e−Λτ Q(uD          D
+                                        syn (0) − uobs ).
+
+Taking absolute values component-wise:
+
+                                |Qe(τ )| = e−Λτ |Q(uD          D
+                                                    syn (0) − uobs )|,                            (102)
+
+where e−Λτ is a diagonal matrix with non-negative entries e−λk τ ≥ 0. This completes the proof.
+
+
+
+Next, we apply Theorem E.1 to prove Theorems 4.2, 5.1, and 5.2.
+
+                                                    48
+Published as a conference paper at ICLR 2026
+
+
+
+
+E.4.1 P ROOF OF T HEOREM 4.2
+Proof of Theorem 4.2. Recall the definitions of the operators:
+                                        ∗
+                         Twave = Fm Kδ Fm ,       (wave kernel operator)
+                           ntk          ∗
+                                                                                                   (103)
+                         Twave = Fm Kτ Fm ,       (wave-based NTK operator)
+
+where Fm : L2 (U ) → L2 (D × T ) is the Fréchet derivative operator defined in the main text.
+The operator Kδ : L2 (U ) → L2 (U ) denotes the identity kernel operator, which is equivalent to
+the identity operator I on L2 (U ). Under proper neural network initialization, the NTK operator
+Kτ : L2 (U ) → L2 (U ) satisfies |Kτ |op ≤ 1. This implies the operator inequality Kδ ⪰ Kτ , i.e.,
+Kδ − Kτ is a positive semi-definite operator. Applying the Spectral Comparison Theorem E.1 with
+K1 = Kδ and K2 = Kτ , we immediately obtain the eigenvalue comparison:
+                                              ∗                ∗           ntk
+                     λj (Twave ) = λj (Fm Kδ Fm ) ≥ λj (Fm Kτ Fm ) = λj (Twave )                   (104)
+for all j = 1, 2, . . . . This establishes the desired eigenvalue decay relationship between the standard
+wave kernel and the wave-based NTK.
+
+E.4.2 P ROOF OF T HEOREM 5.1
+Proof of Theorem 5.1. Recall the operator definitions for the two learning paradigms:
+                                          ∗
+                          TINR = FmKINR Fm  ,        (operator of INR-FWI)
+                                          ∗                                                        (105)
+                          TMPE = Fm KMPE Fm ,        (operator of MPE-FWI)
+where KINR and KMPE are the NTK operators for the INR and MPE models, respectively. From
+Audia et al. (2025), we have the operator decomposition:
+                                          KMPE = KINR + K +                                        (106)
+
+where K + is a positive semi-definite operator. This decomposition implies the operator inequality
+KMPE ⪰ KINR , as KMPE − KINR = K + ⪰ 0. Applying Theorem E.1 with K1 = KMPE and
+K2 = KINR , we directly obtain the spectral enhancement property:
+                                             ∗                  ∗
+                   λj (TMPE ) = λj (Fm KMPE Fm ) ≥ λj (Fm KINR Fm ) = λj (TINR )                   (107)
+for all j = 1, 2, . . . . This completes the proof that the MPE approach exhibits enhanced spectral
+properties compared to the standard INR approach.
+
+E.4.3 P ROOF OF T HEOREM 5.2
+Proof. We consider three CR-FWI methods: INR, MPE, and IG (INR-Grid). Let their respective
+model representations be:
+                                       mINR (x) =MLPθ (ϕINR
+                                                        θ1 (x)),
+                                       mMPE (x) =MLPθ (ϕMPE
+                                                        θ2 (x)),                                   (108)
+                                        mIG (x) =MLPθ (ϕIG
+                                                        θ3 (x)),
+                  √             Lp
+where ϕIGθ2 (x) =   α · ϕINR
+                         θ2 (x)     (1 − α) · ϕMPE
+                                               θ2 (x) denotes the concatenation of feature vectors
+with a weighting factor α ∈ [0, 1]. A key observation is that the NTK for each method admits
+a natural decomposition into two components: one from the MLP parameters and one from the
+feature encoding parameters. For any method, we have:
+                                p
+                                X ∂mθ (y) ∂mθ(z)
+                    K(y, z) =
+                                 i=1
+                                         ∂θi      ∂θi
+                                 1 −1
+                                pX                     p
+                                     ∂mθ (y) ∂mθ(z) X ∂mθ (y) ∂mθ(z)                               (109)
+                              =                    +
+                                 i=1
+                                      ∂θi     ∂θi    i=p
+                                                         ∂θi   ∂θi
+                                |        {z       } | 1    {z      }
+                                           KMLP                      KEncode
+
+
+
+                                                   49
+Published as a conference paper at ICLR 2026
+
+
+
+
+Crucially, we assume that all three methods share the same MLP architecture, and thus have identical
+KMLP components in the infinite-width limit. The differences arise only in the encoding components:
+                                                    INR
+                                      KINR =KMLP + KEncode ,
+                                                    MPE
+                                      KMPE =KMLP + KEncode ,                                  (110)
+                                                    IG
+                                       KIG =KMLP + KEncode
+                                                           INR       MPE
+From Audia et al. (2025), we have the operator inequality KEncode ⪯ KEncode . For the IG method,
+we assume the INR and MPE feature gradients are orthogonal, and we obtain:
+                       √              √                  √
+     IG
+   KEncode (x, x′ ) = ⟨ α · ϕINR
+                             θ1 (x) ⊕   1 − α · ϕMPE           INR ′                 MPE ′
+                                                 θ2 (x), α · ϕθ1 (x ) ⊕ (1 − α) · ϕθ2 (x )⟩
+                                   INR ′                           MPE ′
+                  = α · ⟨ϕINR                             MPE
+                          θ1 (x), ϕθ1 (x )⟩ + (1 − α) · ⟨ϕθ2 (x), ϕθ2 (x )⟩
+                         INR
+                  = α · KEncode (x, x′ ) + (1 − α) · KEncode
+                                                      MPE
+                                                             (x, x′ )                         (111)
+This linear combination preserves the ordering:
+                                     INR       IG        MPE
+                                    KEncode ⪯ KEncode ⪯ KEncode                               (112)
+Since all methods share the same KMLP component, this ordering extends to the full NTK:
+                                        KINR ⪯ KIG ⪯ KMPE                                     (113)
+Defining the following wave-based NTK operators:
+                                                        ∗
+                                        TINR =Fm KINR Fm   ,
+                                                      ∗
+                                         TIG =Fm KIG Fm ,                                     (114)
+                                                         ∗
+                                        TMPE =Fm KMPE Fm    ,
+and applying Theorem E.1 twice yields the desired spectral ordering:
+                       λi (TINR ) ≤ λi (TIG ) ≤ λi (TMPE )   for all i = 1, 2, . . .          (115)
+This completes the proof.
+
+
+
+
+                                                  50
+

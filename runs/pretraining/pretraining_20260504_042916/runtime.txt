@@ -1,0 +1,3 @@
+run_type: pretraining
+model_path: models\pretrainedcustom\model_Unetcustom_100_supervised_800_channel_5
+runtime_seconds: 729.920530

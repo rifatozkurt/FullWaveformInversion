@@ -1,0 +1,3 @@
+method: inr_fwi
+case_id: 1
+runtime_seconds: 667.420685

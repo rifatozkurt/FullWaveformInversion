@@ -1,0 +1,54 @@
+run:
+  method: nn_based_fwi
+  case_id: 5
+paths:
+  casestudy_data: data/casestudy
+  pretrained_models: models/pretrained
+  runs: runs
+simulation:
+  Lx: 0.1
+  Ly: 0.05
+  Nx: 255
+  Ny: 127
+  dt: 3.0e-08
+  N: 2000
+  gamma0: 1.0e-05
+  rho: 2700.0
+  c: 6000.0
+  numberOfSources: 4
+  distanceBetweenSources: 36
+  distanceBetweenSensors: 6
+source:
+  frequency: 500000.0
+  cycles: 2
+  amplitude: 1000000000000.0
+experiments:
+  modelType: Unet
+  NNchannels:
+  - 1
+  - 16
+  - 32
+  - 64
+  - 128
+  numberOfConvolutionsPerBlock: 2
+  pretrain_samples:
+  - 800
+  epochs_pretrain: 100
+  nn_based_fwi:
+    seed: 50
+    input_shape:
+    - 1
+    - 128
+    - 8
+    - 4
+    trunc_normal_mean: 0.4
+    trunc_normal_std: 0.2
+    trunc_normal_a: 0.0
+    trunc_normal_b: 0.9
+    lr: 0.0005
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1000000000.0

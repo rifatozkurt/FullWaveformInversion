@@ -1,0 +1,230 @@
+import random
+import time
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
+from src import io
+from src import networks as NN
+from src.experiments.base import get_device, simulation_parameters
+
+
+def _save_pretraining_outputs(run_dir, training_loss, validation_loss):
+    run_dir = Path(run_dir)
+    histories_dir = io.ensure_dir(run_dir / "histories")
+    figures_dir = io.ensure_dir(run_dir / "figures")
+    outputs_dir = io.ensure_dir(run_dir / "outputs")
+
+    training_path = histories_dir / "pretraining_training_loss_history.txt"
+    validation_path = histories_dir / "pretraining_validation_loss_history.txt"
+    np.savetxt(training_path, training_loss, delimiter=", ")
+    np.savetxt(validation_path, validation_loss, delimiter=", ")
+
+    plot_path = figures_dir / "pretraining_loss_history.png"
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+    epochs = np.arange(1, len(training_loss) + 1)
+    ax.plot(epochs, training_loss, label="Training loss", color="#2f5aa8", linewidth=2)
+    ax.plot(epochs, validation_loss, label="Validation loss", color="#b64040", linewidth=2)
+    ax.set_title("Pretraining loss history")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("loss")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.savefig(plot_path, dpi=160)
+    plt.close(fig)
+
+    np.savez(
+        outputs_dir / "pretraining_loss_history.npz",
+        training_loss=training_loss,
+        validation_loss=validation_loss,
+    )
+    return {
+        "training_loss_path": training_path,
+        "validation_loss_path": validation_path,
+        "plot_path": plot_path,
+    }
+
+
+def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None, run_dir=None):
+    """
+    Train the U-Net from initial adjoint gradients to true gamma fields.
+    Save model weights and return the saved model path.
+    """
+    params = simulation_parameters(config)
+    cfg = config["pretraining"]
+    unet_cfg = config.get("models", {}).get("unet", {})
+    device = get_device()
+
+    Nx = params["Nx"]
+    Ny = params["Ny"]
+    gamma0 = params["gamma0"]
+
+    destinationFolder = Path(data_dir or config["paths"]["train_data"])
+    output_dir = Path(output_dir or config["paths"]["pretrained_models"])
+    io.ensure_dir(output_dir)
+
+    numberOfSamples = int(cfg["numberOfSamples"])
+    initialGradient = torch.zeros((numberOfSamples, 1, Nx + 1, Ny + 1), dtype=torch.float32, device=device)
+    gamma = torch.ones((numberOfSamples, 1, Nx + 3, Ny + 3), dtype=torch.float32, device=device)
+    idx_numberOfSamples = random.sample(range(int(cfg["availableSamples"])), numberOfSamples)
+
+    print(f"Loading {numberOfSamples} pretraining sample(s) from {destinationFolder}", flush=True)
+    load_print_every = max(1, numberOfSamples // 20)
+    for idx, file_idx in enumerate(idx_numberOfSamples):
+        if idx == 0 or (idx + 1) % load_print_every == 0 or idx + 1 == numberOfSamples:
+            print(
+                f"Loading sample {idx + 1}/{numberOfSamples}: material{file_idx}.h5, gradient{file_idx}.h5",
+                flush=True,
+            )
+        initialGradient[idx, 0] = torch.tensor(
+            io.load_hdf(destinationFolder / f"gradient{file_idx}.h5")
+        ).to(device).to(torch.float32)
+
+        gamma[idx, 0, 1:-1, 1:-1] = torch.tensor(
+            io.load_hdf(destinationFolder / f"material{file_idx}.h5")
+        ).to(device).to(torch.float32)
+
+    trainingType = cfg["trainingType"]
+    NNchannels = unet_cfg.get("channels", cfg["NNchannels"])
+    numberOfConvolutionsPerBlock = int(
+        unet_cfg.get(
+            "number_of_convolutions_per_block",
+            cfg["numberOfConvolutionsPerBlock"],
+        )
+    )
+    batch_norm = bool(unet_cfg.get("batch_norm", True))
+    batchSize = numberOfSamples // int(cfg["batchDivisor"])
+
+    inputData = initialGradient
+    inputData = (inputData - torch.amin(inputData, (2, 3), keepdim=True)) / (
+        torch.amax(inputData, (2, 3), keepdim=True)
+        - torch.amin(inputData, (2, 3), keepdim=True)
+    ) * 2 - 1
+
+    dataset = NN.FWIDataset(inputData, gamma, device)
+    datasetTraining, datasetValidation = torch.utils.data.random_split(
+        dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(int(cfg["split_seed"]))
+    )
+
+    dataloaderTraining = DataLoader(datasetTraining, batch_size=batchSize)
+    dataloaderValidation = DataLoader(datasetValidation, batch_size=len(datasetValidation))
+    number_training_batches = len(dataloaderTraining)
+    if run_dir is not None:
+        outputs_dir = io.ensure_dir(Path(run_dir) / "outputs")
+        np.savetxt(outputs_dir / "pretraining_sample_ids.txt", idx_numberOfSamples, fmt="%d")
+        np.savetxt(outputs_dir / "pretraining_training_subset_indices.txt", datasetTraining.indices, fmt="%d")
+        np.savetxt(outputs_dir / "pretraining_validation_subset_indices.txt", datasetValidation.indices, fmt="%d")
+    print(
+        "Pretraining setup: epochs={}, batch_size={}, training_batches={}, validation_samples={}".format(
+            int(cfg["epochs"]),
+            batchSize,
+            number_training_batches,
+            len(datasetValidation),
+        ),
+        flush=True,
+    )
+
+    torch.manual_seed(int(cfg["seed"]))
+    model_type = cfg["model_type"]
+    torch.use_deterministic_algorithms(True)
+    model = NN.Unet(
+        NNchannels,
+        numberOfConvolutionsPerBlock,
+        gamma0,
+        bnorm=batch_norm,
+    )
+    NN.initWeights(model)
+    torch.nn.init.normal_(model.convolutionsUp[-1].weight, std=0.01, mean=0.7)
+    model.convolutionsUp[-1].bias.data.fill_(3)
+    model.to(device)
+
+    lr = cfg["lr"]
+    alpha = cfg["alpha"]
+    beta = cfg["beta"]
+    epochs = int(cfg["epochs"])
+    clipGrad = cfg["clipGrad"]
+
+    optimizer = torch.optim.RMSprop(model.parameters(), lr)
+    lr_lambda = lambda epoch: (beta * epoch + 1) ** alpha
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    trainingCostHistory = np.zeros(epochs)
+    trainingMSEHistory = np.zeros(epochs)
+    validationCostHistory = np.zeros(epochs)
+    start = time.perf_counter()
+    # Legacy compatibility: Pretraining.py resets beta to zero after creating
+    # the scheduler lambda. Because the lambda closes over beta, the original
+    # learning-rate schedule is effectively constant even though cfg["beta"] is
+    # 0.2. Keep this quirk so UI/CLI pretraining matches the legacy script.
+    beta = 0
+
+    for epoch in range(epochs):
+        model.train()
+        for batch, sample in enumerate(dataloaderTraining):
+            sample[0] = sample[0].to(device)
+            sample[1] = sample[1].to(device)
+            optimizer.zero_grad(set_to_none=True)
+
+            gammaPred = torch.ones((len(sample[0]), 1, Nx + 3, Ny + 3), device=device, dtype=torch.float32)
+            gammaPred[:, :, 1:-1, 1:-1] = model(sample[0])
+            cost = 0.5 * torch.mean((gammaPred - sample[1]) ** 2)
+            cost.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clipGrad)
+            optimizer.step()
+            scheduler.step()
+            trainingCostHistory[epoch] += cost.detach().cpu()
+            print(
+                "Epoch {}/{} batch {}/{} training_cost={:.6E}".format(
+                    epoch + 1,
+                    epochs,
+                    batch + 1,
+                    number_training_batches,
+                    float(cost.detach().cpu()),
+                ),
+                flush=True,
+            )
+
+        trainingCostHistory[epoch] /= batch + 1
+        trainingMSEHistory[epoch] /= batch + 1
+
+        model.eval()
+        sample = next(iter(dataloaderValidation))
+        sample[0] = sample[0].to(device)
+        sample[1] = sample[1].to(device)
+        gammaPred = torch.ones((len(sample[0]), 1, Nx + 3, Ny + 3), device=device, dtype=torch.float32)
+        gammaPred[:, :, 1:-1, 1:-1] = model(sample[0])
+        validationCostHistory[epoch] = 0.5 * torch.mean((gammaPred.detach().cpu() - sample[1].cpu()) ** 2)
+
+        if epoch % 10 == 0:
+            elapsed_time = time.perf_counter() - start
+            string = "Epoch: {}/{}\tTraining Cost: {:.6E}\t Validation Cost: {:3E}\tElapsed time: {:2f} \t Input per sec: {:3f}"
+            print(string.format(epoch, epochs - 1, trainingCostHistory[epoch], validationCostHistory[epoch], elapsed_time, batchSize / elapsed_time))
+            start = time.perf_counter()
+
+        if progress_callback is not None:
+            progress_callback(
+                epoch,
+                epochs,
+                float(trainingCostHistory[epoch]),
+                float(validationCostHistory[epoch]),
+            )
+
+    path = output_dir / (
+        "model_" + model_type + "_" + str(epochs) + "_" + trainingType + "_"
+        + str(numberOfSamples) + "_channel_" + str(len(NNchannels))
+    )
+    torch.save(model.state_dict(), path)
+    if run_dir is not None:
+        output_paths = _save_pretraining_outputs(
+            run_dir,
+            trainingCostHistory,
+            validationCostHistory,
+        )
+        print(f"Saved pretraining histories and plot under {Path(run_dir)}", flush=True)
+        for key, value in output_paths.items():
+            print(f"{key}: {value}", flush=True)
+    return path
