@@ -70,6 +70,9 @@ class INRSIRENFWI:
 
         start = time.perf_counter()
         for epoch in range(epochs):
+            
+            optimizer.zero_grad(set_to_none=True)
+
             gammaPred = torch.ones(
                 (1, 1, params["Nx"] + 3, params["Ny"] + 3),
                 device=device,
@@ -103,7 +106,6 @@ class INRSIRENFWI:
 
             optimizer.step()
             scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
 
             costHistory[epoch] = cost.detach().cpu()
             mseHistory[epoch] = 0.5 * torch.mean((gammaPred[0] - gamma) ** 2).detach().cpu()

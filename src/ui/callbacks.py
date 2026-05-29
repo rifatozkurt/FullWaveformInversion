@@ -7,13 +7,12 @@ import threading
 import time
 import traceback
 
-import matplotlib.pyplot as plt
-from matplotlib.ticker import ScalarFormatter
 import numpy as np
 
 from src import io
 from src.config import load_config, save_experiment_config
 from src.data_generation import split_raw_dataset
+from src.experiments.base import plot_cost_mse_history
 from src.registry import EXPERIMENTS
 from src.ui import case_viewer
 from src.pretraining import pretrain_unet
@@ -48,6 +47,10 @@ def _gamma_image(path):
 
 def _cost_mse_plot(run_dir, method_name, case_id):
     run_dir = Path(run_dir)
+    saved_plot_path = run_dir / "figures" / f"{method_name}_case{case_id}_mse_history.png"
+    if saved_plot_path.exists():
+        return saved_plot_path
+
     cost_path = run_dir / "histories" / f"{method_name}_case{case_id}_cost_history.txt"
     mse_path = run_dir / "histories" / f"{method_name}_case{case_id}_mse_history.txt"
     if not cost_path.exists() or not mse_path.exists():
@@ -55,31 +58,12 @@ def _cost_mse_plot(run_dir, method_name, case_id):
 
     cost = np.loadtxt(cost_path, delimiter=",")
     mse = np.loadtxt(mse_path, delimiter=",")
-    plot_path = run_dir / "outputs" / f"{method_name}_case{case_id}_cost_mse.png"
-    fig, axes = plt.subplots(2, 1, figsize=(7, 5), sharex=True, constrained_layout=True)
-    axes[0].plot(np.atleast_1d(cost), color="#2f5aa8", linewidth=2)
-    axes[0].set_title("Cost history", fontsize=11)
-    axes[0].set_ylabel("cost")
-    axes[0].grid(True, alpha=0.3)
-    cost_formatter = ScalarFormatter(useMathText=True)
-    cost_formatter.set_powerlimits((-3, 3))
-    cost_formatter.set_useOffset(False)
-    axes[0].yaxis.set_major_formatter(cost_formatter)
-
-    axes[1].plot(np.atleast_1d(mse), color="#b64040", linewidth=2)
-    axes[1].set_title("MSE history", fontsize=11)
-    axes[1].set_xlabel("epoch")
-    axes[1].set_ylabel("MSE")
-    axes[1].grid(True, alpha=0.3)
-    mse_formatter = ScalarFormatter(useMathText=True)
-    mse_formatter.set_powerlimits((-5, 5))
-    mse_formatter.set_useOffset(False)
-    axes[1].yaxis.set_major_formatter(mse_formatter)
-
-    fig.suptitle(f"{method_name} case {case_id}", fontsize=12)
-    fig.savefig(plot_path)
-    plt.close(fig)
-    return plot_path
+    return plot_cost_mse_history(
+        cost,
+        mse,
+        saved_plot_path,
+        title=f"{method_name} case {case_id}",
+    )
 
 
 class _QueueWriter:

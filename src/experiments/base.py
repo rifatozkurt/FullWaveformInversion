@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 import numpy as np
 import torch
 
@@ -175,6 +176,12 @@ def save_histories(
     )
     io.save_history(run_dir / "histories" / f"{cost_name}.txt", cost_history)
     io.save_history(run_dir / "histories" / f"{mse_name}.txt", mse_history)
+    plot_cost_mse_history(
+        cost_history,
+        mse_history,
+        run_dir / "figures" / f"{mse_name}.png",
+        title=mse_name.removesuffix("_mse_history").replace("_", " "),
+    )
 
 
 def save_outputs(run_dir, method_name, case_id, final_gamma, target_gamma):
@@ -194,6 +201,14 @@ def save_outputs(run_dir, method_name, case_id, final_gamma, target_gamma):
 def plot_reconstruction_history(history_gamma, gamma, epochs, path):
     path = Path(path)
     io.ensure_dir(path.parent)
+    target_gamma = gamma[0, 0, 1:-1, 1:-1].detach().cpu().numpy()
+
+    def physical_frame(frame):
+        if frame.shape == target_gamma.shape:
+            return frame
+        if frame.ndim == 2 and frame[1:-1, 1:-1].shape == target_gamma.shape:
+            return frame[1:-1, 1:-1]
+        return frame
 
     fig, axes = plt.subplots(3, 3, figsize=(11, 8), constrained_layout=True)
     axes = axes.ravel()
@@ -203,18 +218,18 @@ def plot_reconstruction_history(history_gamma, gamma, epochs, path):
     image = None
     for axis, history_index in zip(axes[:sample_count], indices):
         image = axis.imshow(
-            np.transpose(history_gamma[history_index, 1:-1, 1:-1]),
+            np.transpose(physical_frame(history_gamma[history_index])),
             vmin=0,
             vmax=1,
         )
         axis.set_title(f"epoch {history_index}", fontsize=10)
         axis.axis("off")
 
-    image = axes[-2].imshow(np.transpose(history_gamma[-1, 1:-1, 1:-1]), vmin=0, vmax=1)
+    image = axes[-2].imshow(np.transpose(physical_frame(history_gamma[-1])), vmin=0, vmax=1)
     axes[-2].set_title("final", fontsize=10)
     axes[-2].axis("off")
     image = axes[-1].imshow(
-        np.transpose(gamma[0, 0, 1:-1, 1:-1].detach().cpu()),
+        np.transpose(target_gamma),
         vmin=0,
         vmax=1,
     )
@@ -227,3 +242,35 @@ def plot_reconstruction_history(history_gamma, gamma, epochs, path):
 
     plt.savefig(path)
     plt.close()
+
+
+def plot_cost_mse_history(cost_history, mse_history, path, title=None):
+    path = Path(path)
+    io.ensure_dir(path.parent)
+
+    fig, axes = plt.subplots(2, 1, figsize=(7, 5), sharex=True, constrained_layout=True)
+    axes[0].plot(np.atleast_1d(cost_history), color="#2f5aa8", linewidth=2)
+    axes[0].set_title("Cost history", fontsize=11)
+    axes[0].set_ylabel("cost")
+    axes[0].grid(True, alpha=0.3)
+    cost_formatter = ScalarFormatter(useMathText=True)
+    cost_formatter.set_powerlimits((-3, 3))
+    cost_formatter.set_useOffset(False)
+    axes[0].yaxis.set_major_formatter(cost_formatter)
+
+    axes[1].plot(np.atleast_1d(mse_history), color="#b64040", linewidth=2)
+    axes[1].set_title("MSE history", fontsize=11)
+    axes[1].set_xlabel("epoch")
+    axes[1].set_ylabel("MSE")
+    axes[1].grid(True, alpha=0.3)
+    mse_formatter = ScalarFormatter(useMathText=True)
+    mse_formatter.set_powerlimits((-5, 5))
+    mse_formatter.set_useOffset(False)
+    axes[1].yaxis.set_major_formatter(mse_formatter)
+
+    if title:
+        fig.suptitle(title, fontsize=12)
+
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
