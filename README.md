@@ -167,6 +167,9 @@ Method-specific fields:
 - `experiments.nn_based_fwi.trunc_normal_mean`, `trunc_normal_std`, `trunc_normal_a`, `trunc_normal_b`: truncated-normal initialization parameters for the NN-based input tensor.
 - `experiments.inr_fwi.hidden_features`, `hidden_layers`: width and depth of the coordinate MLP used for basic INR-FWI. The INR receives normalized `(x, y)` coordinates and outputs one material value per grid point.
 - `experiments.inr_siren_fwi.hidden_features`, `hidden_layers`, `omega0`: width, depth, and sine frequency for SIREN-style INR-FWI. This method keeps the repo's gamma scaling while using sine activations and SIREN initialization.
+- `experiments.inr_lr_fwi.rank`, `hidden_features`, `hidden_layers`, `omega0`, `core_init_std`: low-rank coordinate representation using separate x/y SIREN feature networks and a trainable core matrix.
+- `experiments.inr_mpe_fwi.num_levels`, `base_resolution`, `per_level_scale`, `features_per_level`, `hidden_features`, `hidden_layers`: dense multi-resolution parametric encoding followed by a compact MLP.
+- `experiments.inr_ig_fwi.fusion_alpha`: hybrid weight between dense MPE features and SIREN coordinate features. This name avoids colliding with the scheduler `alpha`.
 - `experiments.transfer_learning_fwi.seed`: seed used before fine-tuning the pretrained U-Net.
 - `experiments.transfer_learning_fwi_frozen_encoder`: transfer-learning variant reserved for freezing the U-Net encoder and fine-tuning the decoder. The current placeholder `freeze_unet_encoder(...)` returns all parameters, so it behaves like normal transfer learning until freeze rules are filled in.
 

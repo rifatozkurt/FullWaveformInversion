@@ -14,7 +14,7 @@ from src.io import create_run_dir, ensure_dir
 from src.registry import get_experiment
 
 
-METHODS = ("inr_fwi", "inr_siren_fwi")
+METHODS = ("inr_fwi", "inr_siren_fwi", "inr_lr_fwi", "inr_mpe_fwi", "inr_ig_fwi")
 
 
 def parse_csv(value, cast):
@@ -36,8 +36,30 @@ def trial_name(method, case_id, trial_index, params):
         f"cs{format_value(params['costScaling'])}",
         f"hf{params['hidden_features']}",
         f"hl{params['hidden_layers']}",
+        f"fb{format_value(params['final_bias'])}",
+        f"tv{format_value(params['tv_weight'])}",
+        f"tvt{params['tv_type']}",
     ]
-    if method == "inr_siren_fwi":
+    if params["output_mode"] != "voidness":
+        parts.append(f"out{params['output_mode']}")
+    if method in ("inr_siren_fwi", "inr_lr_fwi"):
+        parts.append(f"w{format_value(params['omega0'])}")
+    if method == "inr_lr_fwi":
+        parts.append(f"r{params['rank']}")
+        parts.append(f"core{format_value(params['core_init_std'])}")
+    if method == "inr_mpe_fwi":
+        parts.append(f"lv{params['num_levels']}")
+        parts.append(f"br{params['base_resolution']}")
+        parts.append(f"pl{format_value(params['per_level_scale'])}")
+        parts.append(f"fpl{params['features_per_level']}")
+        parts.append(f"grid{format_value(params['grid_init_std'])}")
+    if method == "inr_ig_fwi":
+        parts.append(f"fa{format_value(params['fusion_alpha'])}")
+        parts.append(f"lv{params['num_levels']}")
+        parts.append(f"br{params['base_resolution']}")
+        parts.append(f"pl{format_value(params['per_level_scale'])}")
+        parts.append(f"fpl{params['features_per_level']}")
+        parts.append(f"grid{format_value(params['grid_init_std'])}")
         parts.append(f"w{format_value(params['omega0'])}")
     return "_".join(parts)
 
@@ -51,9 +73,39 @@ def build_trials(method, args):
         "alpha": args.alphas,
         "beta": args.betas,
         "seed": args.seeds,
+        "output_mode": args.output_modes,
+        "final_bias": args.final_biases,
+        "tv_weight": args.tv_weights,
+        "tv_type": args.tv_types,
     }
-    if method == "inr_siren_fwi":
+    if method in ("inr_siren_fwi", "inr_lr_fwi"):
         base["omega0"] = args.omega0s
+    if method == "inr_lr_fwi":
+        base["rank"] = args.ranks
+        base["core_init_std"] = args.core_init_stds
+    if method == "inr_mpe_fwi":
+        base["num_levels"] = args.num_levels
+        base["base_resolution"] = args.base_resolutions
+        base["per_level_scale"] = args.per_level_scales
+        base["features_per_level"] = args.features_per_levels
+        base["grid_init_std"] = args.grid_init_stds
+        base["align_corners"] = args.align_corners_values
+        base["swap_grid_coords"] = args.swap_grid_coords_values
+    if method == "inr_ig_fwi":
+        base["fusion_alpha"] = args.fusion_alphas
+        base["num_levels"] = args.num_levels
+        base["base_resolution"] = args.base_resolutions
+        base["per_level_scale"] = args.per_level_scales
+        base["features_per_level"] = args.features_per_levels
+        base["grid_init_std"] = args.grid_init_stds
+        base["align_corners"] = args.align_corners_values
+        base["swap_grid_coords"] = args.swap_grid_coords_values
+        base["siren_hidden_features"] = args.siren_hidden_features
+        base["siren_hidden_layers"] = args.siren_hidden_layers
+        base["siren_out_features"] = args.siren_out_features
+        base["omega0"] = args.omega0s
+        base["fusion_hidden_features"] = args.fusion_hidden_features
+        base["fusion_hidden_layers"] = args.fusion_hidden_layers
 
     keys = list(base)
     for values in itertools.product(*(base[key] for key in keys)):
@@ -94,9 +146,52 @@ def plot_heatmaps(results, output_dir):
     metrics = ("final_cost", "best_cost", "final_mse", "best_mse")
 
     for method, method_df in results.groupby("method"):
-        group_cols = ["hidden_features", "hidden_layers", "alpha", "beta", "seed"]
+        group_cols = [
+            "hidden_features",
+            "hidden_layers",
+            "output_mode",
+            "final_bias",
+            "tv_weight",
+            "tv_type",
+            "alpha",
+            "beta",
+            "seed",
+        ]
         if method == "inr_siren_fwi":
             group_cols.append("omega0")
+        if method == "inr_lr_fwi":
+            group_cols.extend(["omega0", "rank", "core_init_std"])
+        if method == "inr_mpe_fwi":
+            group_cols.extend(
+                [
+                    "num_levels",
+                    "base_resolution",
+                    "per_level_scale",
+                    "features_per_level",
+                    "grid_init_std",
+                    "align_corners",
+                    "swap_grid_coords",
+                ]
+            )
+        if method == "inr_ig_fwi":
+            group_cols.extend(
+                [
+                    "fusion_alpha",
+                    "num_levels",
+                    "base_resolution",
+                    "per_level_scale",
+                    "features_per_level",
+                    "grid_init_std",
+                    "align_corners",
+                    "swap_grid_coords",
+                    "siren_hidden_features",
+                    "siren_hidden_layers",
+                    "siren_out_features",
+                    "omega0",
+                    "fusion_hidden_features",
+                    "fusion_hidden_layers",
+                ]
+            )
 
         for group_values, group_df in method_df.groupby(group_cols, dropna=False):
             group_values = group_values if isinstance(group_values, tuple) else (group_values,)
@@ -150,7 +245,7 @@ def plot_heatmaps(results, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run compact hyperparameter sweeps for INR_FWI and INR_SIREN_FWI."
+        description="Run compact hyperparameter sweeps for INR-family FWI methods."
     )
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--case", type=int, default=1)
@@ -161,6 +256,25 @@ def main():
     parser.add_argument("--hidden-features", default="128")
     parser.add_argument("--hidden-layers", default="4")
     parser.add_argument("--omega0s", default="30")
+    parser.add_argument("--ranks", default="32")
+    parser.add_argument("--core-init-stds", default="1e-3")
+    parser.add_argument("--num-levels", default="16")
+    parser.add_argument("--base-resolutions", default="50")
+    parser.add_argument("--per-level-scales", default="1.05")
+    parser.add_argument("--features-per-levels", default="2")
+    parser.add_argument("--grid-init-stds", default="1e-4")
+    parser.add_argument("--align-corners-values", default="true")
+    parser.add_argument("--swap-grid-coords-values", default="false")
+    parser.add_argument("--fusion-alphas", default="0.5")
+    parser.add_argument("--siren-hidden-features", default="128")
+    parser.add_argument("--siren-hidden-layers", default="2")
+    parser.add_argument("--siren-out-features", default="128")
+    parser.add_argument("--fusion-hidden-features", default="64")
+    parser.add_argument("--fusion-hidden-layers", default="2")
+    parser.add_argument("--output-modes", default="voidness")
+    parser.add_argument("--final-biases", default="-5.0")
+    parser.add_argument("--tv-weights", default="0.0")
+    parser.add_argument("--tv-types", default="anisotropic")
     parser.add_argument("--alphas", default="-0.5")
     parser.add_argument("--betas", default="0.2")
     parser.add_argument("--seeds", default="50")
@@ -177,6 +291,25 @@ def main():
     args.hidden_features = parse_csv(args.hidden_features, int)
     args.hidden_layers = parse_csv(args.hidden_layers, int)
     args.omega0s = parse_csv(args.omega0s, float)
+    args.ranks = parse_csv(args.ranks, int)
+    args.core_init_stds = parse_csv(args.core_init_stds, float)
+    args.num_levels = parse_csv(args.num_levels, int)
+    args.base_resolutions = parse_csv(args.base_resolutions, int)
+    args.per_level_scales = parse_csv(args.per_level_scales, float)
+    args.features_per_levels = parse_csv(args.features_per_levels, int)
+    args.grid_init_stds = parse_csv(args.grid_init_stds, float)
+    args.align_corners_values = [value.lower() in ("1", "true", "yes", "on") for value in parse_csv(args.align_corners_values, str)]
+    args.swap_grid_coords_values = [value.lower() in ("1", "true", "yes", "on") for value in parse_csv(args.swap_grid_coords_values, str)]
+    args.fusion_alphas = parse_csv(args.fusion_alphas, float)
+    args.siren_hidden_features = parse_csv(args.siren_hidden_features, int)
+    args.siren_hidden_layers = parse_csv(args.siren_hidden_layers, int)
+    args.siren_out_features = parse_csv(args.siren_out_features, int)
+    args.fusion_hidden_features = parse_csv(args.fusion_hidden_features, int)
+    args.fusion_hidden_layers = parse_csv(args.fusion_hidden_layers, int)
+    args.output_modes = parse_csv(args.output_modes, str)
+    args.final_biases = parse_csv(args.final_biases, float)
+    args.tv_weights = parse_csv(args.tv_weights, float)
+    args.tv_types = parse_csv(args.tv_types, str)
     args.alphas = parse_csv(args.alphas, float)
     args.betas = parse_csv(args.betas, float)
     args.seeds = parse_csv(args.seeds, int)

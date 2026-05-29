@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import csv
 from pathlib import Path
 
 import matplotlib as mpl
@@ -273,4 +274,54 @@ def plot_cost_mse_history(cost_history, mse_history, path, title=None):
 
     fig.savefig(path, dpi=160)
     plt.close(fig)
+    return path
+
+
+def tensor_stats(tensor, prefix):
+    values = tensor.detach()
+    return {
+        f"{prefix}_min": float(values.min().cpu()),
+        f"{prefix}_max": float(values.max().cpu()),
+        f"{prefix}_mean": float(values.mean().cpu()),
+        f"{prefix}_std": float(values.std().cpu()),
+    }
+
+
+def tensor_norm(tensor):
+    return float(torch.linalg.vector_norm(tensor.detach()).cpu())
+
+
+def parameter_grad_norm(model):
+    total = 0.0
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            total += float(parameter.grad.detach().pow(2).sum().cpu())
+    return total ** 0.5
+
+
+def total_variation_loss(gamma_2d, tv_type="anisotropic", eps=1e-8):
+    # TV is applied directly to the generated gamma image and backpropagated
+    # through PyTorch; the FWI data gradient is still supplied by the adjoint.
+    dx = gamma_2d[1:, :] - gamma_2d[:-1, :]
+    dy = gamma_2d[:, 1:] - gamma_2d[:, :-1]
+
+    if tv_type == "anisotropic":
+        return dx.abs().mean() + dy.abs().mean()
+    if tv_type == "isotropic":
+        dx_c = dx[:, :-1]
+        dy_c = dy[:-1, :]
+        return torch.sqrt(dx_c**2 + dy_c**2 + eps).mean()
+    raise ValueError(f"Unknown tv_type: {tv_type}")
+
+
+def save_inr_diagnostics(run_dir, method_name, case_id, rows):
+    if not rows:
+        return None
+    path = Path(run_dir) / "histories" / f"{method_name}_case{case_id}_diagnostics.csv"
+    io.ensure_dir(path.parent)
+    fieldnames = list(rows[0].keys())
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
     return path

@@ -70,6 +70,40 @@ def build_app():
                     l2 = gr.Number(defaults["l2"], label="l2")
                     alpha = gr.Number(defaults["alpha"], label="alpha")
                     beta = gr.Number(defaults["beta"], label="beta")
+                with gr.Row():
+                    output_mode = gr.Dropdown(
+                        ["voidness", "direct_gamma"],
+                        value=defaults["output_mode"],
+                        label="output_mode",
+                    )
+                    final_bias = gr.Number(defaults["final_bias"], label="final_bias")
+                    tv_weight = gr.Number(defaults["tv_weight"], label="tv_weight")
+                    tv_type = gr.Dropdown(
+                        ["anisotropic", "isotropic", "none"],
+                        value=defaults["tv_type"],
+                        label="tv_type",
+                    )
+                gr.Markdown("Advanced INR representation parameters")
+                with gr.Row():
+                    rank = gr.Number(defaults["rank"], label="rank", precision=0)
+                    core_init_std = gr.Number(defaults["core_init_std"], label="core_init_std")
+                    omega0 = gr.Number(defaults["omega0"], label="omega0")
+                    fusion_alpha = gr.Slider(0.0, 1.0, value=defaults["fusion_alpha"], step=0.05, label="fusion_alpha")
+                with gr.Row():
+                    num_levels = gr.Number(defaults["num_levels"], label="num_levels", precision=0)
+                    base_resolution = gr.Number(defaults["base_resolution"], label="base_resolution", precision=0)
+                    per_level_scale = gr.Number(defaults["per_level_scale"], label="per_level_scale")
+                    features_per_level = gr.Number(defaults["features_per_level"], label="features_per_level", precision=0)
+                    grid_init_std = gr.Number(defaults["grid_init_std"], label="grid_init_std")
+                with gr.Row():
+                    align_corners = gr.Checkbox(defaults["align_corners"], label="align_corners")
+                    swap_grid_coords = gr.Checkbox(defaults["swap_grid_coords"], label="swap_grid_coords")
+                    siren_hidden_features = gr.Number(defaults["siren_hidden_features"], label="siren_hidden_features", precision=0)
+                    siren_hidden_layers = gr.Number(defaults["siren_hidden_layers"], label="siren_hidden_layers", precision=0)
+                with gr.Row():
+                    siren_out_features = gr.Number(defaults["siren_out_features"], label="siren_out_features", precision=0)
+                    fusion_hidden_features = gr.Number(defaults["fusion_hidden_features"], label="fusion_hidden_features", precision=0)
+                    fusion_hidden_layers = gr.Number(defaults["fusion_hidden_layers"], label="fusion_hidden_layers", precision=0)
                 pretrained_model_path = gr.Textbox(defaults["pretrained_model_path"], label="Pretrained Model Directory")
 
             run = gr.Button("Run Selected Cases", variant="primary")
@@ -93,6 +127,26 @@ def build_app():
                     values["l2"],
                     values["alpha"],
                     values["beta"],
+                    gr.update(value=values["output_mode"]),
+                    values["final_bias"],
+                    values["tv_weight"],
+                    gr.update(value=values["tv_type"]),
+                    values["rank"],
+                    values["core_init_std"],
+                    values["num_levels"],
+                    values["base_resolution"],
+                    values["per_level_scale"],
+                    values["features_per_level"],
+                    values["grid_init_std"],
+                    values["align_corners"],
+                    values["swap_grid_coords"],
+                    values["fusion_alpha"],
+                    values["siren_hidden_features"],
+                    values["siren_hidden_layers"],
+                    values["siren_out_features"],
+                    values["omega0"],
+                    values["fusion_hidden_features"],
+                    values["fusion_hidden_layers"],
                     values["pretrained_model_path"],
                 )
 
@@ -107,6 +161,26 @@ def build_app():
                     l2,
                     alpha,
                     beta,
+                    output_mode,
+                    final_bias,
+                    tv_weight,
+                    tv_type,
+                    rank,
+                    core_init_std,
+                    num_levels,
+                    base_resolution,
+                    per_level_scale,
+                    features_per_level,
+                    grid_init_std,
+                    align_corners,
+                    swap_grid_coords,
+                    fusion_alpha,
+                    siren_hidden_features,
+                    siren_hidden_layers,
+                    siren_out_features,
+                    omega0,
+                    fusion_hidden_features,
+                    fusion_hidden_layers,
                     pretrained_model_path,
                 ],
             )
@@ -142,6 +216,26 @@ def build_app():
                     l2,
                     alpha,
                     beta,
+                    output_mode,
+                    final_bias,
+                    tv_weight,
+                    tv_type,
+                    rank,
+                    core_init_std,
+                    num_levels,
+                    base_resolution,
+                    per_level_scale,
+                    features_per_level,
+                    grid_init_std,
+                    align_corners,
+                    swap_grid_coords,
+                    fusion_alpha,
+                    siren_hidden_features,
+                    siren_hidden_layers,
+                    siren_out_features,
+                    omega0,
+                    fusion_hidden_features,
+                    fusion_hidden_layers,
                     pretrained_model_path,
                 ],
                 outputs=[status, elapsed, run_dirs, gallery, console],
