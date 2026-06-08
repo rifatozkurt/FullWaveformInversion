@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--method", default=selected_method, choices=METHODS)
     parser.add_argument("--material-path", default=None)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--print-every", type=int, default=50)

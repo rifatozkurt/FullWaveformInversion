@@ -176,7 +176,56 @@ experiments:
     l2: 1.0e-06
     costScaling: 1.0e+09
 
+  inr_mpe_centered_fwi:
+    seed: 50
+    num_levels: 4
+    base_resolution: 16
+    per_level_scale: 1.2
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-04
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 1
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
   inr_ig_fwi:
+    seed: 50
+    fusion_alpha: 0.5
+    num_levels: 4
+    base_resolution: 16
+    per_level_scale: 1.2
+    features_per_level: 2
+    grid_init_std: 1.0e-04
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 1
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
+  inr_ig_centered_fwi:
     seed: 50
     fusion_alpha: 0.5
     num_levels: 4

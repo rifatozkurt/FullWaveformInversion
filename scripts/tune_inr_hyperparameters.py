@@ -14,7 +14,17 @@ from src.io import create_run_dir, ensure_dir
 from src.registry import get_experiment
 
 
-METHODS = ("inr_fwi", "inr_siren_fwi", "inr_lr_fwi", "inr_mpe_fwi", "inr_ig_fwi")
+METHODS = (
+    "inr_fwi",
+    "inr_siren_fwi",
+    "inr_lr_fwi",
+    "inr_mpe_fwi",
+    "inr_mpe_centered_fwi",
+    "inr_ig_fwi",
+    "inr_ig_centered_fwi",
+)
+MPE_METHODS = ("inr_mpe_fwi", "inr_mpe_centered_fwi")
+IG_METHODS = ("inr_ig_fwi", "inr_ig_centered_fwi")
 
 
 def parse_csv(value, cast):
@@ -47,13 +57,13 @@ def trial_name(method, case_id, trial_index, params):
     if method == "inr_lr_fwi":
         parts.append(f"r{params['rank']}")
         parts.append(f"core{format_value(params['core_init_std'])}")
-    if method == "inr_mpe_fwi":
+    if method in MPE_METHODS:
         parts.append(f"lv{params['num_levels']}")
         parts.append(f"br{params['base_resolution']}")
         parts.append(f"pl{format_value(params['per_level_scale'])}")
         parts.append(f"fpl{params['features_per_level']}")
         parts.append(f"grid{format_value(params['grid_init_std'])}")
-    if method == "inr_ig_fwi":
+    if method in IG_METHODS:
         parts.append(f"fa{format_value(params['fusion_alpha'])}")
         parts.append(f"lv{params['num_levels']}")
         parts.append(f"br{params['base_resolution']}")
@@ -83,7 +93,7 @@ def build_trials(method, args):
     if method == "inr_lr_fwi":
         base["rank"] = args.ranks
         base["core_init_std"] = args.core_init_stds
-    if method == "inr_mpe_fwi":
+    if method in MPE_METHODS:
         base["num_levels"] = args.num_levels
         base["base_resolution"] = args.base_resolutions
         base["per_level_scale"] = args.per_level_scales
@@ -91,7 +101,7 @@ def build_trials(method, args):
         base["grid_init_std"] = args.grid_init_stds
         base["align_corners"] = args.align_corners_values
         base["swap_grid_coords"] = args.swap_grid_coords_values
-    if method == "inr_ig_fwi":
+    if method in IG_METHODS:
         base["fusion_alpha"] = args.fusion_alphas
         base["num_levels"] = args.num_levels
         base["base_resolution"] = args.base_resolutions
@@ -161,7 +171,7 @@ def plot_heatmaps(results, output_dir):
             group_cols.append("omega0")
         if method == "inr_lr_fwi":
             group_cols.extend(["omega0", "rank", "core_init_std"])
-        if method == "inr_mpe_fwi":
+        if method in MPE_METHODS:
             group_cols.extend(
                 [
                     "num_levels",
@@ -173,7 +183,7 @@ def plot_heatmaps(results, output_dir):
                     "swap_grid_coords",
                 ]
             )
-        if method == "inr_ig_fwi":
+        if method in IG_METHODS:
             group_cols.extend(
                 [
                     "fusion_alpha",

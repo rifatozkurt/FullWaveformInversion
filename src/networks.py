@@ -364,7 +364,7 @@ class INR_LR(torch.nn.Module):
         x -> F_x(x) in R^rank
         y -> F_y(y) in R^rank
     and a trainable core matrix C:
-        raw(x, y) = F_x(x)^T C F_y(y) + final_bias
+        raw(x, y) = F_x(x)^T * C * F_y(y) + final_bias
     """
 
     def __init__(
@@ -631,6 +631,154 @@ class INR_MPE(torch.nn.Module):
         return self.gamma_from_raw(raw)
 
 
+class INR_MPE_CENTERED(torch.nn.Module):
+    """
+    MPE-INR with centered residual logits.
+    Difference from INR_MPE: raw = final_bias + (MLP(encoded) - mean(MLP(encoded))).
+    """
+
+    def __init__(
+        self,
+        gamma0,
+        num_levels=16,
+        base_resolution=50,
+        per_level_scale=1.05,
+        features_per_level=2,
+        hidden_features=64,
+        hidden_layers=2,
+        output_mode="voidness",
+        final_bias=-5.0,
+        grid_init_std=1e-4,
+        align_corners=True,
+        swap_grid_coords=False,
+    ):
+        super().__init__()
+
+        self.gamma0 = gamma0
+        self.num_levels = num_levels
+        self.base_resolution = base_resolution
+        self.per_level_scale = per_level_scale
+        self.features_per_level = features_per_level
+        self.hidden_features = hidden_features
+        self.hidden_layers = hidden_layers
+        self.output_mode = output_mode
+        self.grid_init_std = grid_init_std
+        self.align_corners = align_corners
+        self.swap_grid_coords = swap_grid_coords
+
+        # Non-trainable final bias that sets the intact-material base logit.
+        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+
+        # Compute grid resolution for each level.
+        # Paper settings: 16 levels, base resolution 50, per-level scale 1.05.
+        self.resolutions = [
+            int(round(base_resolution * (per_level_scale ** level)))
+            for level in range(num_levels)
+        ]
+
+        # Trainable feature grids of shape
+        #     [1, features_per_level, H, W]
+        self.grids = torch.nn.ParameterList()
+        for res in self.resolutions:
+            grid = torch.nn.Parameter(
+                grid_init_std * torch.randn(
+                    1,
+                    features_per_level,
+                    res,
+                    res,
+                )
+            )
+            self.grids.append(grid)
+
+        # Compact MLP after multi-resolution grid encoding
+        encoded_dim = num_levels * features_per_level
+
+        layers = []
+        in_features = encoded_dim
+
+        for _ in range(hidden_layers):
+            layers.append(torch.nn.Linear(in_features, hidden_features))
+            layers.append(torch.nn.ReLU())
+            in_features = hidden_features
+
+        layers.append(torch.nn.Linear(in_features, 1))
+
+        self.mlp = torch.nn.Sequential(*layers)
+
+        self.init_mlp_final_layer()
+
+    def init_mlp_final_layer(self):
+        """Initialize the final MLP layer for residual-logit prediction."""
+        final_layer = None
+        for module in reversed(self.mlp):
+            if isinstance(module, torch.nn.Linear):
+                final_layer = module
+                break
+
+        if final_layer is None:
+            raise RuntimeError("No final Linear layer found in INR_MPE_Centered.mlp")
+
+        with torch.no_grad():
+            # final_bias supplies the base level; this layer predicts residuals.
+            final_layer.weight.normal_(0.0, 1e-3)
+            final_layer.bias.zero_()
+
+    def sample_grid_features(self, coords):
+        """
+        Sample trainable features from all resolution levels.
+        Input: coords: [N, 2], expected in [-1, 1]
+        Output: encoded: [N, num_levels * features_per_level]
+        """
+        if coords.ndim != 2 or coords.shape[-1] != 2:
+            raise ValueError(
+                f"coords must have shape [N, 2], got {tuple(coords.shape)}"
+            )
+
+        sample_coords = coords
+        if self.swap_grid_coords:
+            sample_coords = sample_coords[:, [1, 0]]
+
+        # grid_sample expects [B, H_out, W_out, 2].
+        # We sample N points as H_out=N, W_out=1.
+        sample_grid = sample_coords.view(1, -1, 1, 2)
+
+        features = []
+
+        for grid in self.grids:
+            sampled = F.grid_sample(
+                grid,
+                sample_grid,
+                mode="bilinear",
+                padding_mode="border",
+                align_corners=self.align_corners,
+            )
+
+            # sampled shape: [1, features_per_level, N, 1]
+            # Convert to: [N, features_per_level]
+            sampled = sampled.squeeze(0).squeeze(-1).transpose(0, 1)
+
+            features.append(sampled)
+
+        encoded = torch.cat(features, dim=-1)
+        return encoded
+
+    def gamma_from_raw(self, raw):
+        if self.output_mode == "voidness":
+            p_void = torch.sigmoid(raw)
+            return 1.0 - (1.0 - self.gamma0) * p_void
+
+        if self.output_mode == "direct_gamma":
+            return self.gamma0 + (1.0 - self.gamma0) * torch.sigmoid(raw)
+
+        raise ValueError(f"Unknown INR_MPE_Centered output_mode: {self.output_mode}")
+
+    def forward(self, coords):
+        encoded = self.sample_grid_features(coords)
+        residual = self.mlp(encoded)
+        residual = residual - residual.mean(dim=0, keepdim=True)
+        raw = self.final_bias + residual
+        return self.gamma_from_raw(raw)
+
 
 class INR_IG(torch.nn.Module):
     """
@@ -875,6 +1023,54 @@ class INR_IG(torch.nn.Module):
         raw = self.fusion_mlp(combined)
 
         return self.gamma_from_raw(raw)
+
+
+class INR_IG_CENTERED(INR_IG):
+    """
+    IG-INR with centered residual logits.
+    Difference from INR_IG: raw = final_bias + (fusion_mlp(features) - mean(fusion_mlp(features))).
+    """
+
+    def __init__(self, *args, **kwargs):
+        final_bias = kwargs.get("final_bias", -5.0)
+        super().__init__(*args, **kwargs)
+        del self.final_bias
+        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+
+    def init_fusion_final_layer(self):
+        """Initialize final fusion layer for residual-logit prediction."""
+        final_layer = None
+
+        for module in reversed(self.fusion_mlp):
+            if isinstance(module, torch.nn.Linear):
+                final_layer = module
+                break
+
+        if final_layer is None:
+            raise RuntimeError("No final Linear layer found in INR_IG_Centered.fusion_mlp")
+
+        with torch.no_grad():
+            # final_bias supplies the base level; this layer predicts residuals.
+            final_layer.weight.normal_(0.0, 1e-3)
+            final_layer.bias.zero_()
+
+    def forward(self, coords):
+        grid_feat = self.sample_grid_features(coords)
+        siren_feat = self.siren_features(coords)
+        a = float(self.alpha)
+
+        combined = torch.cat(
+            [
+                np.sqrt(a) * grid_feat,
+                np.sqrt(1.0 - a) * siren_feat,
+            ],
+            dim=-1,
+        )
+
+        residual = self.fusion_mlp(combined)
+        residual = residual - residual.mean(dim=0, keepdim=True)
+        raw = self.final_bias + residual
+        return self.gamma_from_raw(raw)
     
     
     
@@ -899,3 +1095,4 @@ class ConstantAnsatz(torch.nn.Module):
 
     def forward(self, x):
         return self.coeff
+

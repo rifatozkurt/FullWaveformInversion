@@ -129,7 +129,7 @@ experiments:
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
-    costScaling: 1000000000.0
+    costScaling: 10000000000.0
   inr_siren_fwi:
     seed: 50
     hidden_features: 128
@@ -137,7 +137,7 @@ experiments:
     omega0: 30
     output_mode: voidness
     final_bias: -5.0
-    lr: 0.0001
+    lr: 0.001
     alpha: -0.5
     beta: 0.2
     epochs: 35
@@ -145,7 +145,7 @@ experiments:
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
-    costScaling: 1000000000.0
+    costScaling: 10000000000.0
   inr_lr_fwi:
     seed: 50
     rank: 32
@@ -155,14 +155,14 @@ experiments:
     core_init_std: 0.001
     output_mode: voidness
     final_bias: -5.0
-    lr: 0.0001
+    lr: 0.001
     alpha: -0.5
     beta: 0.2
     epochs: 35
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
-    costScaling: 1000000000.0
+    costScaling: 10000000000.0
   inr_mpe_fwi:
     seed: 50
     num_levels: 16
@@ -175,15 +175,15 @@ experiments:
     align_corners: true
     swap_grid_coords: false
     output_mode: voidness
-    final_bias: -5.0
-    lr: 0.0001
+    final_bias: -7.0
+    lr: 0.001
     alpha: -0.5
     beta: 0.2
-    epochs: 35
+    epochs: 5
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
-    costScaling: 1000000000.0
+    costScaling: 10000000000.0
   inr_ig_fwi:
     seed: 50
     fusion_alpha: 0.5
@@ -209,7 +209,7 @@ experiments:
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
-    costScaling: 1000000000.0
+    costScaling: 10000000000.0
   transfer_learning_fwi:
     seed: 99
     lr: 0.0005

@@ -1,8 +1,10 @@
 from src.experiments.conventional_fwi import ConventionalFWI
 from src.experiments.conventional_fwi_initial_guess import ConventionalFWIWithInitialGuess
 from src.experiments.inr_fwi import INRFWI
+from src.experiments.inr_ig_centered_fwi import INRIGCenteredFWI
 from src.experiments.inr_ig_fwi import INRIGFWI
 from src.experiments.inr_lr_fwi import INRLrFWI
+from src.experiments.inr_mpe_centered_fwi import INRMPECenteredFWI
 from src.experiments.inr_mpe_fwi import INRMPEFWI
 from src.experiments.inr_siren_fwi import INRSIRENFWI
 from src.experiments.nn_based_fwi import NNBasedFWI
@@ -17,7 +19,9 @@ EXPERIMENTS = {
     "inr_siren_fwi": INRSIRENFWI,
     "inr_lr_fwi": INRLrFWI,
     "inr_mpe_fwi": INRMPEFWI,
+    "inr_mpe_centered_fwi": INRMPECenteredFWI,
     "inr_ig_fwi": INRIGFWI,
+    "inr_ig_centered_fwi": INRIGCenteredFWI,
     "conventional_fwi_initial_guess": ConventionalFWIWithInitialGuess,
     "transfer_learning_fwi": TransferLearningFWI,
     "transfer_learning_fwi_frozen_encoder": TransferLearningFWIFrozenEncoder,

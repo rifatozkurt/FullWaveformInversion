@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 import itertools
 import time
 import traceback
@@ -8,6 +9,7 @@ from pathlib import Path
 import _bootstrap
 import matplotlib.pyplot as plt
 import pandas as pd
+import torch
 import yaml
 
 from src.config import load_config, save_experiment_config
@@ -313,6 +315,10 @@ def run_stage(stage_name, method, base_config, case_id, data_dir, sweep_dir, epo
                 update_plots(records, sweep_dir, metric)
                 write_summary(sweep_dir, records, carried, f"Stopped after failed trial {trial_index}.")
                 raise
+        finally:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         records.append(record)
         update_plots(records, sweep_dir, metric)
@@ -332,6 +338,16 @@ def build_parser():
     parser.add_argument("--cost-scaling", type=float, default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--stop-on-error", action="store_true")
+    parser.add_argument(
+        "--mpe-method",
+        default="inr_mpe_fwi",
+        choices=("inr_mpe_fwi", "inr_mpe_centered_fwi"),
+    )
+    parser.add_argument(
+        "--ig-method",
+        default="inr_ig_fwi",
+        choices=("inr_ig_fwi", "inr_ig_centered_fwi"),
+    )
 
     parser.add_argument("--siren-lrs", default="1e-4,3e-4")
     parser.add_argument("--siren-omega0s", default="0.5,30")
@@ -475,7 +491,7 @@ def main():
     ]
     trial_index = run_stage(
         "03_mpe_grid",
-        "inr_mpe_fwi",
+        args.mpe_method,
         base_config,
         args.case,
         data_dir,
@@ -518,7 +534,7 @@ def main():
     ]
     trial_index = run_stage(
         "04_ig_fusion",
-        "inr_ig_fwi",
+        args.ig_method,
         base_config,
         args.case,
         data_dir,

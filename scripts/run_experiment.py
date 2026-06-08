@@ -10,8 +10,8 @@ from src.registry import EXPERIMENTS, get_experiment
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", required=True, choices=EXPERIMENTS.keys())
-    parser.add_argument("--case", required=True, type=int)
+    parser.add_argument("--method", default="inr_siren_fwi", required=False, choices=EXPERIMENTS.keys())
+    parser.add_argument("--case", default=1, required=False, type=int)
     parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
 
