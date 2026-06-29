@@ -9,12 +9,13 @@ from src.config import load_config, save_experiment_config
 from src.io import create_run_dir
 from src.registry import EXPERIMENTS
 
+default_methods = ["inr_siren_centered_fwi", "inr_mpe_centered_fwi", "inr_ig_centered_fwi", "inr_mpe_fwi", "inr_ig_fwi"]
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", action="append", type=int)
-    parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--method", action="append", choices=EXPERIMENTS.keys())
+    parser.add_argument("--config", default="configs/long_run.yaml")
+    parser.add_argument("--method", default=default_methods, action="append", choices=EXPERIMENTS.keys())
     args = parser.parse_args()
 
     config_path = Path(args.config)

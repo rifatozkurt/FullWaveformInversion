@@ -1,3 +1,6 @@
+from dataclasses import asdict, dataclass
+import math
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -55,6 +58,187 @@ def PixelNorm(x):
     return x / torch.sqrt(
         torch.sum(x ** 2, axis=(2, 3), keepdim=True) / x.shape[2] / x.shape[3] + 1e-8
     )
+
+
+@dataclass
+class SegFormerSpec:
+    in_channels: int = 1
+    hidden_sizes: tuple = (24, 48, 96, 192)
+    depths: tuple = (2, 2, 2, 2)
+    num_attention_heads: tuple = (1, 2, 4, 8)
+    sr_ratios: tuple = (8, 4, 2, 1)
+    patch_sizes: tuple = (7, 3, 3, 3)
+    strides: tuple = (4, 2, 2, 2)
+    mlp_ratios: tuple = (4, 4, 4, 4)
+    decoder_hidden_size: int = 64
+    hidden_dropout_prob: float = 0.0
+    attention_probs_dropout_prob: float = 0.0
+    classifier_dropout_prob: float = 0.0
+    drop_path_rate: float = 0.0
+
+    @classmethod
+    def from_dict(cls, values):
+        if values is None:
+            return cls()
+        tuple_keys = {
+            "hidden_sizes",
+            "depths",
+            "num_attention_heads",
+            "sr_ratios",
+            "patch_sizes",
+            "strides",
+            "mlp_ratios",
+        }
+        cleaned = {
+            key: tuple(value) if key in tuple_keys else value
+            for key, value in values.items()
+            if key in cls.__dataclass_fields__
+        }
+        return cls(**cleaned)
+
+    def to_dict(self):
+        values = asdict(self)
+        for key, value in values.items():
+            if isinstance(value, tuple):
+                values[key] = list(value)
+        return values
+
+    def validate(self):
+        sequence_lengths = {
+            len(self.hidden_sizes),
+            len(self.depths),
+            len(self.num_attention_heads),
+            len(self.sr_ratios),
+            len(self.patch_sizes),
+            len(self.strides),
+            len(self.mlp_ratios),
+        }
+        if sequence_lengths != {4}:
+            raise ValueError("SegFormerSpec expects four stages for all stage-wise settings")
+        for stage, (hidden_size, heads) in enumerate(
+            zip(self.hidden_sizes, self.num_attention_heads)
+        ):
+            if hidden_size % heads != 0:
+                raise ValueError(
+                    "SegFormer hidden size must be divisible by attention heads "
+                    f"at stage {stage}: {hidden_size} % {heads} != 0"
+                )
+
+
+def normalize_gradient_for_transformer(
+    gradient,
+    mode="robust_abs",
+    quantile=0.99,
+    eps=1e-8,
+    clamp=1.0,
+):
+    """
+    sign-preserving gradient normalization for transformer inputs.
+
+    """
+    squeeze_channel = False
+    if gradient.ndim == 3:
+        gradient = gradient.unsqueeze(1)
+        squeeze_channel = True
+    if gradient.ndim != 4:
+        raise ValueError(f"gradient must have shape [B, 1, H, W], got {tuple(gradient.shape)}")
+
+    if mode in (None, "none"):
+        normalized = gradient
+    elif mode == "robust_abs":
+        flat_abs = gradient.detach().abs().flatten(start_dim=1)
+        scale = torch.quantile(flat_abs, float(quantile), dim=1)
+        scale = torch.clamp(scale, min=float(eps)).view(-1, 1, 1, 1)
+        normalized = gradient / scale
+        if clamp is not None:
+            normalized = torch.clamp(normalized, -float(clamp), float(clamp))
+    else:
+        raise ValueError(f"Unknown transformer gradient normalization mode: {mode}")
+
+    if squeeze_channel:
+        return normalized.squeeze(1)
+    return normalized
+
+
+class GradientSegFormer(torch.nn.Module):
+    """
+    SegFormer wrapper mapping one adjoint-gradient image to differentiable gamma.
+
+    Input:  [B, 1, H, W]
+    Logits: [B, 1, H, W]
+    Gamma:  [B, 1, H, W]
+    """
+
+    def __init__(self, spec=None, gamma_min=1.0e-5, void_prior=0.01):
+        super().__init__()
+        self.spec = SegFormerSpec.from_dict(spec) if isinstance(spec, dict) else (spec or SegFormerSpec())
+        self.spec.validate()
+        self.void_prior = float(void_prior)
+
+        try:
+            from transformers import SegformerConfig, SegformerForSemanticSegmentation
+        except ImportError as exc:
+            raise ImportError(
+                "GradientSegFormer requires the 'transformers' package. "
+                "Install project dependencies or run: pip install transformers"
+            ) from exc
+
+        config = SegformerConfig(
+            num_channels=int(self.spec.in_channels),
+            num_labels=1,
+            hidden_sizes=list(self.spec.hidden_sizes),
+            depths=list(self.spec.depths),
+            num_attention_heads=list(self.spec.num_attention_heads),
+            sr_ratios=list(self.spec.sr_ratios),
+            patch_sizes=list(self.spec.patch_sizes),
+            strides=list(self.spec.strides),
+            mlp_ratios=list(self.spec.mlp_ratios),
+            decoder_hidden_size=int(self.spec.decoder_hidden_size),
+            hidden_dropout_prob=float(self.spec.hidden_dropout_prob),
+            attention_probs_dropout_prob=float(self.spec.attention_probs_dropout_prob),
+            classifier_dropout_prob=float(self.spec.classifier_dropout_prob),
+            drop_path_rate=float(self.spec.drop_path_rate),
+        )
+        self.segformer = SegformerForSemanticSegmentation(config)
+        self.register_buffer("gamma_min", torch.tensor(float(gamma_min), dtype=torch.float32))
+        self.reset_classifier_bias()
+
+    def reset_classifier_bias(self):
+        if not (0.0 < self.void_prior < 1.0):
+            raise ValueError(f"void_prior must be in (0, 1), got {self.void_prior}")
+        prior_logit = math.log(self.void_prior / (1.0 - self.void_prior))
+        classifier = getattr(self.segformer.decode_head, "classifier", None)
+        if classifier is None or classifier.bias is None:
+            raise RuntimeError("Could not find SegFormer decode-head classifier bias")
+        with torch.no_grad():
+            classifier.bias.fill_(prior_logit)
+
+    def architecture_dict(self):
+        return self.spec.to_dict()
+
+    def forward_logits(self, gradient_input):
+        if gradient_input.ndim != 4 or gradient_input.shape[1] != self.spec.in_channels:
+            raise ValueError(
+                "GradientSegFormer expects input shape "
+                f"[B, {self.spec.in_channels}, H, W], got {tuple(gradient_input.shape)}"
+            )
+        output = self.segformer(pixel_values=gradient_input)
+        logits = output.logits
+        if logits.shape[-2:] != gradient_input.shape[-2:]:
+            logits = F.interpolate(
+                logits,
+                size=gradient_input.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        return logits
+
+    def forward_voidness(self, gradient_input):
+        return torch.sigmoid(self.forward_logits(gradient_input))
+
+    def forward(self, gradient_input):
+        p_void = self.forward_voidness(gradient_input)
+        return 1.0 - (1.0 - self.gamma_min) * p_void
 
 
 # NN definition
@@ -355,6 +539,33 @@ class INRSIREN(torch.nn.Module):
             x = torch.sin(self.omega0 * layer(x))
         raw = self.layers[-1](x)
         return self.gamma_from_raw(raw)
+
+
+class INRSIREN_CENTERED(INRSIREN):
+    """
+    SIREN-INR with centered residual logits.
+    Difference from INRSIREN: raw = final_bias + (final_layer(features) - mean(final_layer(features))).
+    """
+
+    def __init__(self, *args, **kwargs):
+        final_bias = kwargs.get("final_bias", -5.0)
+        if len(args) >= 6:
+            final_bias = args[5]
+        super().__init__(*args, **kwargs)
+        del self.final_bias
+        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+
+        with torch.no_grad():
+            self.layers[-1].bias.zero_()
+
+    def forward(self, coords):
+        x = coords
+        for layer in self.layers[:-1]:
+            x = torch.sin(self.omega0 * layer(x))
+        residual = self.layers[-1](x)
+        residual = residual - residual.mean(dim=0, keepdim=True)
+        raw = self.final_bias + residual
+        return self.gamma_from_raw(raw)
     
     
 class INR_LR(torch.nn.Module):
@@ -648,7 +859,7 @@ class INR_MPE_CENTERED(torch.nn.Module):
         hidden_layers=2,
         output_mode="voidness",
         final_bias=-5.0,
-        grid_init_std=1e-4,
+        grid_init_std=1e-2,
         align_corners=True,
         swap_grid_coords=False,
     ):

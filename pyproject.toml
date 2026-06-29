@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib",
     "torch",
     "PyYAML",
+    "transformers",
 ]
 
 [tool.setuptools.packages.find]

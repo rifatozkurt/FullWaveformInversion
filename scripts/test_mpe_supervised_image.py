@@ -8,7 +8,7 @@ import torch
 
 from src.config import load_config
 from src.io import load_hdf
-from src.networks import INR, INR_IG, INR_LR, INR_MPE, INRSIREN
+from src.networks import INR, INR_IG, INR_LR, INR_MPE, INRSIREN, INRSIREN_CENTERED
 
 
 selected_method = "inr_ig_fwi"
@@ -16,6 +16,7 @@ selected_method = "inr_ig_fwi"
 METHODS = (
     "inr_fwi",
     "inr_siren_fwi",
+    "inr_siren_centered_fwi",
     "inr_lr_fwi",
     "inr_mpe_fwi",
     "inr_ig_fwi",
@@ -77,6 +78,13 @@ def build_model(config, method, device):
         )
     elif method == "inr_siren_fwi":
         model = INRSIREN(
+            hidden_features=int(cfg["hidden_features"]),
+            hidden_layers=int(cfg["hidden_layers"]),
+            omega0=float(cfg.get("omega0", 30)),
+            **common,
+        )
+    elif method == "inr_siren_centered_fwi":
+        model = INRSIREN_CENTERED(
             hidden_features=int(cfg["hidden_features"]),
             hidden_layers=int(cfg["hidden_layers"]),
             omega0=float(cfg.get("omega0", 30)),
@@ -162,8 +170,8 @@ def main():
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--method", default=selected_method, choices=METHODS)
     parser.add_argument("--material-path", default=None)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--print-every", type=int, default=50)
     args = parser.parse_args()

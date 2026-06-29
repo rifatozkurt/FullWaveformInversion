@@ -1,0 +1,339 @@
+paths:
+  train_data: data/train
+  test_data: data/test
+  casestudy_data: data/casestudy
+  pretrained_models: models/pretrained
+  checkpoints: models/checkpoints
+  runs: runs/experimental
+
+simulation:
+  Lx: 0.1
+  Ly: 0.05
+  Nx: 255
+  Ny: 127
+  dt: 3.0e-08
+  N: 2000
+  gamma0: 1.0e-05
+  rho: 2700
+  c: 6000
+  numberOfSources: 4
+  distanceBetweenSources: 36
+  distanceBetweenSensors: 6
+
+source:
+  frequency: 500000
+  cycles: 2
+  amplitude: 1.0e+12
+
+data_generation:
+  seed: 2
+  train:
+    number_of_cases: 5
+    number_of_damages: 1
+    factor_to_avoid_inverse_crime: 2
+  test:
+    number_of_cases: 2
+    number_of_damages: 1
+    factor_to_avoid_inverse_crime: 2
+
+models:
+  unet:
+    channels: [1, 16, 32, 64, 128]
+    number_of_convolutions_per_block: 2
+    batch_norm: true
+  segformer:
+    in_channels: 1
+    hidden_sizes: [24, 48, 96, 192]
+    depths: [2, 2, 2, 2]
+    num_attention_heads: [1, 2, 4, 8]
+    sr_ratios: [8, 4, 2, 1]
+    patch_sizes: [7, 3, 3, 3]
+    strides: [4, 2, 2, 2]
+    mlp_ratios: [4, 4, 4, 4]
+    decoder_hidden_size: 64
+    hidden_dropout_prob: 0.0
+    attention_probs_dropout_prob: 0.0
+    classifier_dropout_prob: 0.0
+    drop_path_rate: 0.0
+
+pretraining:
+  seed: 30
+  split_seed: 2
+  numberOfSamples: 800
+  availableSamples: 800
+  trainingType: supervised
+  model_type: Unet
+  NNchannels: [1, 16, 32, 64, 128]
+  numberOfConvolutionsPerBlock: 2
+  batchDivisor: 10
+  lr: 5.0e-04
+  alpha: -0.5
+  beta: 0.2
+  epochs: 100
+  clipGrad: 5.0e-04
+  l2: 1.0e-06
+  costScaling: 1.0e+08
+
+segformer_pretraining:
+  seed: 30
+  split_seed: 2
+  numberOfSamples: 800
+  availableSamples: 800
+  trainingType: segmentation
+  model_type: SegFormer
+  batch_size: 4
+  lr: 3.0e-04
+  weight_decay: 1.0e-04
+  scheduler: cosine
+  epochs: 100
+  clipGrad: 1.0
+  dice_weight: 1.0
+  bce_pos_weight: auto
+  void_gamma_threshold: 0.5
+  eval_threshold: 0.5
+  void_prior: 0.01
+  gradient_normalization:
+    mode: robust_abs
+    quantile: 0.99
+    eps: 1.0e-08
+    clamp: 1.0
+
+experiments:
+  cases: [1, 2, 3, 4]
+  pretrain_samples: [800]
+  epochs_pretrain: 100
+  modelType: Unet
+  NNchannels: [1, 16, 32, 64, 128]
+  numberOfConvolutionsPerBlock: 2
+
+  conventional_fwi:
+    lr: 8.0e-02
+    alpha: 0.0
+    beta: 0.0
+    weightLrFactor: 1
+    clipGrad: 1.0e-05
+    epochs: 35
+    costScaling: 1.0e+12
+
+  conventional_fwi_initial_guess:
+    seed: 99
+    pretrain_samples: 800
+    lr: 5.0e-02
+    alpha: 0.0
+    beta: 0.0
+    weightLrFactor: 1
+    clipGrad: 1.0e-05
+    epochs: 35
+    costScaling: 1.0e+12
+
+  nn_based_fwi:
+    seed: 50
+    input_shape: [1, 128, 8, 4]
+    trunc_normal_mean: 0.4
+    trunc_normal_std: 0.2
+    trunc_normal_a: 0.0
+    trunc_normal_b: 0.9
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
+  inr_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_siren_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_siren_centered_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_lr_fwi:
+    seed: 50
+    rank: 32
+    hidden_features: 128
+    hidden_layers: 3
+    omega0: 30
+    core_init_std: 1.0e-03
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_mpe_fwi:
+    seed: 50
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-03
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -5
+    lr: 1.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_mpe_centered_fwi:
+    seed: 50
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -4.5
+    lr: 1.0e-02
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_ig_fwi:
+    seed: 50
+    fusion_alpha: 0.8
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    grid_init_std: 1.0e-03
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -4.5
+    lr: 1.0e-2
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_ig_centered_fwi:
+    seed: 50
+    fusion_alpha: 0.8
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -4.5
+    lr: 1.0e-2
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  transfer_learning_fwi:
+    seed: 99
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
+  transfer_learning_fwi_frozen_encoder:
+    seed: 99
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
+  transfer_segformer_fwi:
+    seed: 99
+    pretrained_checkpoint: model_SegFormer_100_segmentation_800.pt
+    trainable_mode: all
+    lr: 3.0e-04
+    weight_decay: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 1.0
+    l2: 1.0e-06
+    costScaling: 1.0e+11

@@ -18,10 +18,9 @@ from src.registry import get_experiment
 
 
 STAGES = (
-    "01_siren",
-    "02_lr_rank",
-    "03_mpe_grid",
-    "04_ig_fusion",
+    "01_siren_centered",
+    "02_mpe_centered_grid",
+    "03_ig_centered_fusion",
 )
 
 
@@ -160,7 +159,6 @@ def write_summary(sweep_dir, records, carried, current_message=""):
                         "costScaling",
                         "omega0",
                         "tv_weight",
-                        "rank",
                         "base_resolution",
                         "per_level_scale",
                         "features_per_level",
@@ -193,7 +191,7 @@ def plot_stage_rankings(df, sweep_dir, metric):
         labels = []
         for _, row in plot_df.iterrows():
             bits = [f"T{int(row['trial'])}"]
-            for key in ("lr", "omega0", "tv_weight", "rank", "base_resolution", "per_level_scale", "features_per_level", "fusion_alpha"):
+            for key in ("lr", "omega0", "tv_weight", "base_resolution", "per_level_scale", "features_per_level", "fusion_alpha"):
                 if key in row and pd.notna(row[key]):
                     bits.append(f"{key}={format_value(row[key])}")
             labels.append("\n".join(bits))
@@ -211,7 +209,7 @@ def plot_stage_rankings(df, sweep_dir, metric):
 
 
 def plot_siren_heatmaps(df, sweep_dir, metric):
-    stage_df = df[(df["stage"] == "01_siren") & (df["status"] == "ok")]
+    stage_df = df[(df["stage"] == "01_siren_centered") & (df["status"] == "ok")]
     if stage_df.empty:
         return
 
@@ -221,7 +219,7 @@ def plot_siren_heatmaps(df, sweep_dir, metric):
             continue
         fig, ax = plt.subplots(figsize=(1.3 * len(table.columns) + 3, 1.0 * len(table.index) + 2.5))
         image = ax.imshow(table.values, aspect="auto", cmap="viridis")
-        ax.set_title(f"SIREN {metric}, tv_weight={format_value(tv_weight)}", fontsize=12)
+        ax.set_title(f"Centered SIREN {metric}, tv_weight={format_value(tv_weight)}", fontsize=12)
         ax.set_xlabel("lr")
         ax.set_ylabel("omega0")
         ax.set_xticks(range(len(table.columns)))
@@ -235,12 +233,12 @@ def plot_siren_heatmaps(df, sweep_dir, metric):
                     ax.text(j, i, "{:.2e}".format(value), ha="center", va="center", color="white", fontsize=8)
         fig.colorbar(image, ax=ax, label=metric)
         fig.tight_layout()
-        fig.savefig(sweep_dir / "01_siren" / f"siren_{metric}_tv{format_value(tv_weight)}.png", dpi=180)
+        fig.savefig(sweep_dir / "01_siren_centered" / f"siren_centered_{metric}_tv{format_value(tv_weight)}.png", dpi=180)
         plt.close(fig)
 
 
 def plot_mpe_heatmaps(df, sweep_dir, metric):
-    stage_df = df[(df["stage"] == "03_mpe_grid") & (df["status"] == "ok")]
+    stage_df = df[(df["stage"] == "02_mpe_centered_grid") & (df["status"] == "ok")]
     if stage_df.empty:
         return
 
@@ -264,7 +262,7 @@ def plot_mpe_heatmaps(df, sweep_dir, metric):
                     ax.text(j, i, "{:.2e}".format(value), ha="center", va="center", color="white", fontsize=8)
         fig.colorbar(image, ax=ax, label=metric)
         fig.tight_layout()
-        fig.savefig(sweep_dir / "03_mpe_grid" / f"mpe_{metric}_fpl{fpl}.png", dpi=180)
+        fig.savefig(sweep_dir / "02_mpe_centered_grid" / f"mpe_centered_{metric}_fpl{fpl}.png", dpi=180)
         plt.close(fig)
 
 
@@ -331,36 +329,24 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Run staged INR-family tuning and carry best parameters between methods."
     )
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/long_run.yaml")
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--selection-metric", default="best_mse", choices=("best_mse", "final_mse", "best_cost", "final_cost"))
     parser.add_argument("--cost-scaling", type=float, default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--stop-on-error", action="store_true")
-    parser.add_argument(
-        "--mpe-method",
-        default="inr_mpe_fwi",
-        choices=("inr_mpe_fwi", "inr_mpe_centered_fwi"),
-    )
-    parser.add_argument(
-        "--ig-method",
-        default="inr_ig_fwi",
-        choices=("inr_ig_fwi", "inr_ig_centered_fwi"),
-    )
 
-    parser.add_argument("--siren-lrs", default="1e-4,3e-4")
-    parser.add_argument("--siren-omega0s", default="0.5,30")
-    parser.add_argument("--siren-tv-weights", default="0,1e-5")
+    parser.add_argument("--siren-lrs", default="1e-4,1e-3")
+    parser.add_argument("--siren-omega0s", default="30")
+    parser.add_argument("--siren-tv-weights", default="0,1e-4")
     parser.add_argument("--tv-type", default="anisotropic")
 
-    parser.add_argument("--lr-ranks", default="8,16,32")
-
-    parser.add_argument("--mpe-base-resolutions", default="16,32,50")
+    parser.add_argument("--mpe-base-resolutions", default="32,50,64")
     parser.add_argument("--mpe-per-level-scales", default="1.05,1.2,1.5")
     parser.add_argument("--mpe-features-per-levels", default="2")
 
-    parser.add_argument("--ig-fusion-alphas", default="0.25,0.5,0.75")
+    parser.add_argument("--ig-fusion-alphas", default="0.25,0.5,0.80")
     return parser
 
 
@@ -371,7 +357,6 @@ def main():
     args.siren_lrs = parse_csv(args.siren_lrs, float)
     args.siren_omega0s = parse_csv(args.siren_omega0s, float)
     args.siren_tv_weights = parse_csv(args.siren_tv_weights, float)
-    args.lr_ranks = parse_csv(args.lr_ranks, int)
     args.mpe_base_resolutions = parse_csv(args.mpe_base_resolutions, int)
     args.mpe_per_level_scales = parse_csv(args.mpe_per_level_scales, float)
     args.mpe_features_per_levels = parse_csv(args.mpe_features_per_levels, int)
@@ -389,7 +374,7 @@ def main():
     metric = args.selection_metric
     cost_scaling = args.cost_scaling
     if cost_scaling is None:
-        cost_scaling = base_config["experiments"]["inr_siren_fwi"]["costScaling"]
+        cost_scaling = base_config["experiments"]["inr_siren_centered_fwi"]["costScaling"]
 
     print(f"Saving staged tuning outputs to {sweep_dir}")
     write_summary(sweep_dir, records, carried, "Starting staged tuning.")
@@ -411,8 +396,8 @@ def main():
         for trial in siren_trials
     ]
     trial_index = run_stage(
-        "01_siren",
-        "inr_siren_fwi",
+        "01_siren_centered",
+        "inr_siren_centered_fwi",
         base_config,
         args.case,
         data_dir,
@@ -425,9 +410,9 @@ def main():
         metric,
         args.stop_on_error,
     )
-    best_siren = best_success(records, "01_siren", metric)
+    best_siren = best_success(records, "01_siren_centered", metric)
     if not best_siren:
-        raise RuntimeError("No successful SIREN trials. Cannot continue staged tuning.")
+        raise RuntimeError("No successful centered SIREN trials. Cannot continue staged tuning.")
     carried["best_siren"] = {
         "lr": best_siren["lr"],
         "omega0": best_siren["omega0"],
@@ -435,41 +420,7 @@ def main():
         "tv_weight": best_siren["tv_weight"],
         "tv_type": best_siren["tv_type"],
     }
-    write_summary(sweep_dir, records, carried, "Finished SIREN stage.")
-
-    lr_trials = [
-        {
-            **carried["best_siren"],
-            "rank": rank,
-        }
-        for rank in args.lr_ranks
-    ]
-    trial_index = run_stage(
-        "02_lr_rank",
-        "inr_lr_fwi",
-        base_config,
-        args.case,
-        data_dir,
-        sweep_dir,
-        args.epochs,
-        trial_index,
-        lr_trials,
-        records,
-        carried,
-        metric,
-        args.stop_on_error,
-    )
-    best_lr = best_success(records, "02_lr_rank", metric)
-    if best_lr:
-        carried["best_lr"] = {
-            "rank": best_lr["rank"],
-            "lr": best_lr["lr"],
-            "omega0": best_lr["omega0"],
-            "costScaling": best_lr["costScaling"],
-            "tv_weight": best_lr["tv_weight"],
-            "tv_type": best_lr["tv_type"],
-        }
-    write_summary(sweep_dir, records, carried, "Finished LR-INR rank stage.")
+    write_summary(sweep_dir, records, carried, "Finished centered SIREN stage.")
 
     mpe_trials = make_trials(
         ["base_resolution", "per_level_scale", "features_per_level"],
@@ -490,8 +441,8 @@ def main():
         for trial in mpe_trials
     ]
     trial_index = run_stage(
-        "03_mpe_grid",
-        args.mpe_method,
+        "02_mpe_centered_grid",
+        "inr_mpe_centered_fwi",
         base_config,
         args.case,
         data_dir,
@@ -504,9 +455,9 @@ def main():
         metric,
         args.stop_on_error,
     )
-    best_mpe = best_success(records, "03_mpe_grid", metric)
+    best_mpe = best_success(records, "02_mpe_centered_grid", metric)
     if not best_mpe:
-        raise RuntimeError("No successful MPE trials. Cannot continue to IG stage.")
+        raise RuntimeError("No successful centered MPE trials. Cannot continue to centered IG stage.")
     carried["best_mpe"] = {
         "base_resolution": best_mpe["base_resolution"],
         "per_level_scale": best_mpe["per_level_scale"],
@@ -516,7 +467,7 @@ def main():
         "tv_weight": best_mpe["tv_weight"],
         "tv_type": best_mpe["tv_type"],
     }
-    write_summary(sweep_dir, records, carried, "Finished MPE grid stage.")
+    write_summary(sweep_dir, records, carried, "Finished centered MPE grid stage.")
 
     ig_trials = [
         {
@@ -533,8 +484,8 @@ def main():
         for fusion_alpha in args.ig_fusion_alphas
     ]
     trial_index = run_stage(
-        "04_ig_fusion",
-        args.ig_method,
+        "03_ig_centered_fusion",
+        "inr_ig_centered_fwi",
         base_config,
         args.case,
         data_dir,
@@ -547,7 +498,7 @@ def main():
         metric,
         args.stop_on_error,
     )
-    best_ig = best_success(records, "04_ig_fusion", metric)
+    best_ig = best_success(records, "03_ig_centered_fusion", metric)
     if best_ig:
         carried["best_ig"] = {
             "fusion_alpha": best_ig["fusion_alpha"],

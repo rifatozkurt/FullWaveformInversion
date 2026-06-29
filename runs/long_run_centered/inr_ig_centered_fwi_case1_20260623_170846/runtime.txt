@@ -1,0 +1,3 @@
+method: inr_ig_centered_fwi
+case_id: 1
+runtime_seconds: 9620.918485

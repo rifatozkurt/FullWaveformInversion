@@ -37,6 +37,7 @@ def experiment_config(config, method_name, case_id):
         },
         "simulation": config["simulation"],
         "source": config.get("source", {}),
+        "models": config.get("models", {}),
         "experiments": {
             **common_experiment_config,
             method_name: experiments[method_name],

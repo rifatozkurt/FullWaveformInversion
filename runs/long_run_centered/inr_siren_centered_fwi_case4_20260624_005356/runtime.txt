@@ -1,0 +1,3 @@
+method: inr_siren_centered_fwi
+case_id: 4
+runtime_seconds: 9601.204186

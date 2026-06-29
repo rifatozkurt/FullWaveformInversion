@@ -17,12 +17,14 @@ from src.registry import get_experiment
 METHODS = (
     "inr_fwi",
     "inr_siren_fwi",
+    "inr_siren_centered_fwi",
     "inr_lr_fwi",
     "inr_mpe_fwi",
     "inr_mpe_centered_fwi",
     "inr_ig_fwi",
     "inr_ig_centered_fwi",
 )
+SIREN_METHODS = ("inr_siren_fwi", "inr_siren_centered_fwi")
 MPE_METHODS = ("inr_mpe_fwi", "inr_mpe_centered_fwi")
 IG_METHODS = ("inr_ig_fwi", "inr_ig_centered_fwi")
 
@@ -52,7 +54,7 @@ def trial_name(method, case_id, trial_index, params):
     ]
     if params["output_mode"] != "voidness":
         parts.append(f"out{params['output_mode']}")
-    if method in ("inr_siren_fwi", "inr_lr_fwi"):
+    if method in SIREN_METHODS or method == "inr_lr_fwi":
         parts.append(f"w{format_value(params['omega0'])}")
     if method == "inr_lr_fwi":
         parts.append(f"r{params['rank']}")
@@ -88,7 +90,7 @@ def build_trials(method, args):
         "tv_weight": args.tv_weights,
         "tv_type": args.tv_types,
     }
-    if method in ("inr_siren_fwi", "inr_lr_fwi"):
+    if method in SIREN_METHODS or method == "inr_lr_fwi":
         base["omega0"] = args.omega0s
     if method == "inr_lr_fwi":
         base["rank"] = args.ranks
@@ -167,7 +169,7 @@ def plot_heatmaps(results, output_dir):
             "beta",
             "seed",
         ]
-        if method == "inr_siren_fwi":
+        if method in SIREN_METHODS:
             group_cols.append("omega0")
         if method == "inr_lr_fwi":
             group_cols.extend(["omega0", "rank", "core_init_std"])

@@ -7,3 +7,5 @@ PyYAML
 tqdm
 gradio
 pillow
+transformers
+transformers

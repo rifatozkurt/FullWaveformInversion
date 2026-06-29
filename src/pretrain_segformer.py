@@ -1,0 +1,287 @@
+import csv
+import random
+import time
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
+from src import io
+from src import networks as NN
+from src.experiments.base import get_device, simulation_parameters
+
+
+def dice_loss_from_logits(logits, target, eps=1e-6):
+    prob = torch.sigmoid(logits)
+    dims = tuple(range(1, prob.ndim))
+    intersection = (prob * target).sum(dim=dims)
+    denominator = prob.sum(dim=dims) + target.sum(dim=dims)
+    dice = (2.0 * intersection + eps) / (denominator + eps)
+    return 1.0 - dice.mean()
+
+
+def segmentation_metrics(logits, target, threshold=0.5, eps=1e-8):
+    pred = (torch.sigmoid(logits) >= threshold).float()
+    target = target.float()
+    tp = (pred * target).sum()
+    fp = (pred * (1.0 - target)).sum()
+    fn = ((1.0 - pred) * target).sum()
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    dice = (2.0 * tp) / (2.0 * tp + fp + fn + eps)
+    iou = tp / (tp + fp + fn + eps)
+    return {
+        "dice_score": float(dice.detach().cpu()),
+        "iou": float(iou.detach().cpu()),
+        "precision": float(precision.detach().cpu()),
+        "recall": float(recall.detach().cpu()),
+    }
+
+
+def save_segformer_pretraining_outputs(run_dir, rows):
+    run_dir = Path(run_dir)
+    histories_dir = io.ensure_dir(run_dir / "histories")
+    figures_dir = io.ensure_dir(run_dir / "figures")
+    outputs_dir = io.ensure_dir(run_dir / "outputs")
+
+    csv_path = histories_dir / "segformer_pretraining_metrics.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    epochs = [row["epoch"] for row in rows]
+    train_loss = [row["train_loss"] for row in rows]
+    val_loss = [row["val_loss"] for row in rows]
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+    ax.plot(epochs, train_loss, label="Training loss", color="#2f5aa8", linewidth=2)
+    ax.plot(epochs, val_loss, label="Validation loss", color="#b64040", linewidth=2)
+    ax.set_title("SegFormer pretraining loss history")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("loss")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plot_path = figures_dir / "segformer_pretraining_loss_history.png"
+    fig.savefig(plot_path, dpi=160)
+    plt.close(fig)
+
+    np.savez(outputs_dir / "segformer_pretraining_metrics.npz", rows=np.array(rows, dtype=object))
+    return {"metrics_csv": csv_path, "plot_path": plot_path}
+
+
+def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device):
+    model.eval()
+    totals = {
+        "val_loss": 0.0,
+        "val_bce_loss": 0.0,
+        "val_dice_loss": 0.0,
+        "dice_score": 0.0,
+        "iou": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+    }
+    batches = 0
+    with torch.no_grad():
+        for gradient, target in dataloader:
+            gradient = gradient.to(device)
+            target = target.to(device)
+            logits = model.forward_logits(gradient)
+            bce_loss = criterion(logits, target)
+            dice_loss = dice_loss_from_logits(logits, target)
+            loss = bce_loss + float(dice_weight) * dice_loss
+            metrics = segmentation_metrics(logits, target, threshold)
+            totals["val_loss"] += float(loss.detach().cpu())
+            totals["val_bce_loss"] += float(bce_loss.detach().cpu())
+            totals["val_dice_loss"] += float(dice_loss.detach().cpu())
+            for key, value in metrics.items():
+                totals[key] += value
+            batches += 1
+    return {key: value / max(batches, 1) for key, value in totals.items()}
+
+
+def load_segformer_checkpoint(path, device):
+    checkpoint = torch.load(Path(path), map_location=device)
+    model = NN.GradientSegFormer(
+        spec=checkpoint["architecture"],
+        gamma_min=checkpoint["gamma_min"],
+        void_prior=checkpoint["void_prior"],
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    return model, checkpoint
+
+
+def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback=None, run_dir=None):
+    params = simulation_parameters(config)
+    cfg = config["segformer_pretraining"]
+    model_cfg = config.get("models", {}).get("segformer", {})
+    device = get_device()
+
+    torch.manual_seed(int(cfg["seed"]))
+    random.seed(int(cfg["seed"]))
+
+    Nx = params["Nx"]
+    Ny = params["Ny"]
+    destination = Path(data_dir or config["paths"]["train_data"])
+    output_dir = io.ensure_dir(output_dir or config["paths"]["pretrained_models"])
+
+    number_of_samples = int(cfg["numberOfSamples"])
+    available_samples = int(cfg["availableSamples"])
+    sample_ids = random.sample(range(available_samples), number_of_samples)
+    gradients = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
+    masks = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
+
+    print(f"Loading {number_of_samples} SegFormer pretraining sample(s) from {destination}", flush=True)
+    for row, sample_id in enumerate(sample_ids):
+        if row == 0 or (row + 1) % max(1, number_of_samples // 20) == 0 or row + 1 == number_of_samples:
+            print(f"Loading sample {row + 1}/{number_of_samples}: material{sample_id}.h5, gradient{sample_id}.h5", flush=True)
+        gradients[row, 0] = torch.tensor(io.load_hdf(destination / f"gradient{sample_id}.h5"), dtype=torch.float32)
+        gamma = torch.tensor(io.load_hdf(destination / f"material{sample_id}.h5"), dtype=torch.float32)
+        masks[row, 0] = (gamma <= float(cfg["void_gamma_threshold"])).float()
+
+    norm_cfg = dict(cfg.get("gradient_normalization", {}))
+    gradients = NN.normalize_gradient_for_transformer(gradients, **norm_cfg)
+
+    dataset = NN.FWIDataset(gradients, masks, device)
+    train_set, val_set = torch.utils.data.random_split(
+        dataset,
+        [0.8, 0.2],
+        generator=torch.Generator().manual_seed(int(cfg["split_seed"])),
+    )
+    batch_size = int(cfg["batch_size"])
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=max(1, min(len(val_set), batch_size)))
+
+    if run_dir is not None:
+        outputs_dir = io.ensure_dir(Path(run_dir) / "outputs")
+        np.savetxt(outputs_dir / "segformer_pretraining_sample_ids.txt", sample_ids, fmt="%d")
+        np.savetxt(outputs_dir / "segformer_pretraining_training_subset_indices.txt", train_set.indices, fmt="%d")
+        np.savetxt(outputs_dir / "segformer_pretraining_validation_subset_indices.txt", val_set.indices, fmt="%d")
+
+    model = NN.GradientSegFormer(
+        spec=model_cfg,
+        gamma_min=params["gamma0"],
+        void_prior=float(cfg["void_prior"]),
+    ).to(device)
+
+    pos_weight_cfg = cfg.get("bce_pos_weight", "auto")
+    if pos_weight_cfg == "auto":
+        positive = masks[train_set.indices].sum()
+        negative = masks[train_set.indices].numel() - positive
+        pos_weight = (negative / torch.clamp(positive, min=1.0)).to(device)
+    elif pos_weight_cfg is None:
+        pos_weight = None
+    else:
+        pos_weight = torch.tensor(float(pos_weight_cfg), device=device)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(cfg["lr"]),
+        weight_decay=float(cfg["weight_decay"]),
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, int(cfg["epochs"])),
+    ) if cfg.get("scheduler", "cosine") == "cosine" else None
+
+    epochs = int(cfg["epochs"])
+    dice_weight = float(cfg["dice_weight"])
+    eval_threshold = float(cfg["eval_threshold"])
+    rows = []
+    best_val = float("inf")
+    best_path = Path(output_dir) / (
+        "model_"
+        + cfg.get("model_type", "SegFormer")
+        + "_"
+        + str(epochs)
+        + "_"
+        + cfg.get("trainingType", "segmentation")
+        + "_"
+        + str(number_of_samples)
+        + ".pt"
+    )
+
+    start = time.perf_counter()
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+        train_bce = 0.0
+        train_dice = 0.0
+        for batch, (gradient, target) in enumerate(train_loader):
+            gradient = gradient.to(device)
+            target = target.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model.forward_logits(gradient)
+            bce_loss = criterion(logits, target)
+            dice_loss = dice_loss_from_logits(logits, target)
+            loss = bce_loss + dice_weight * dice_loss
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg["clipGrad"]))
+            optimizer.step()
+            train_loss += float(loss.detach().cpu())
+            train_bce += float(bce_loss.detach().cpu())
+            train_dice += float(dice_loss.detach().cpu())
+            print(
+                "Epoch {}/{} batch {}/{} train_loss={:.6E}".format(
+                    epoch + 1,
+                    epochs,
+                    batch + 1,
+                    len(train_loader),
+                    float(loss.detach().cpu()),
+                ),
+                flush=True,
+            )
+        if scheduler is not None:
+            scheduler.step()
+
+        train_batches = max(1, len(train_loader))
+        val_metrics = evaluate_model(model, val_loader, criterion, dice_weight, eval_threshold, device)
+        row = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss / train_batches,
+            "train_bce_loss": train_bce / train_batches,
+            "train_dice_loss": train_dice / train_batches,
+            **val_metrics,
+        }
+        rows.append(row)
+
+        if row["val_loss"] < best_val:
+            best_val = row["val_loss"]
+            checkpoint = {
+                "model_state_dict": model.state_dict(),
+                "architecture": model.architecture_dict(),
+                "gamma_min": float(params["gamma0"]),
+                "void_prior": float(cfg["void_prior"]),
+                "gradient_normalization": norm_cfg,
+                "void_gamma_threshold": float(cfg["void_gamma_threshold"]),
+                "training_config": dict(cfg),
+                "epoch": epoch + 1,
+                "validation_metrics": val_metrics,
+            }
+            torch.save(checkpoint, best_path)
+
+        elapsed = time.perf_counter() - start
+        print(
+            "Epoch: {}/{}\tTrain loss: {:.6E}\tVal loss: {:.6E}\tDice: {:.4f}\tIoU: {:.4f}\tElapsed: {:.2f}s".format(
+                epoch,
+                epochs - 1,
+                row["train_loss"],
+                row["val_loss"],
+                row["dice_score"],
+                row["iou"],
+                elapsed,
+            ),
+            flush=True,
+        )
+        start = time.perf_counter()
+
+        if progress_callback is not None:
+            progress_callback(epoch, epochs, row["train_loss"], row["val_loss"])
+
+    if run_dir is not None and rows:
+        paths = save_segformer_pretraining_outputs(run_dir, rows)
+        for key, value in paths.items():
+            print(f"{key}: {value}", flush=True)
+    return best_path

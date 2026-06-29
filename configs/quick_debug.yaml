@@ -136,6 +136,23 @@ experiments:
     l2: 1.0e-06
     costScaling: 1.0e+09
 
+  inr_siren_centered_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 1
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
   inr_lr_fwi:
     seed: 50
     rank: 8
@@ -184,7 +201,7 @@ experiments:
     features_per_level: 2
     hidden_features: 64
     hidden_layers: 2
-    grid_init_std: 1.0e-04
+    grid_init_std: 1.0e-02
     align_corners: true
     swap_grid_coords: false
     output_mode: voidness
@@ -232,7 +249,7 @@ experiments:
     base_resolution: 16
     per_level_scale: 1.2
     features_per_level: 2
-    grid_init_std: 1.0e-04
+    grid_init_std: 1.0e-02
     align_corners: true
     swap_grid_coords: false
     siren_hidden_features: 128

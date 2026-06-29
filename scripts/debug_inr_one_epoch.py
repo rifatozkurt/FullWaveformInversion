@@ -20,12 +20,23 @@ from src.experiments.base import (
     tensor_stats,
 )
 from src.io import ensure_dir
-from src.networks import INR, INR_IG, INR_IG_CENTERED, INR_LR, INR_MPE, INR_MPE_CENTERED, INRSIREN, Unet
+from src.networks import (
+    INR,
+    INR_IG,
+    INR_IG_CENTERED,
+    INR_LR,
+    INR_MPE,
+    INR_MPE_CENTERED,
+    INRSIREN,
+    INRSIREN_CENTERED,
+    Unet,
+)
 
 
 METHODS = (
     "inr_fwi",
     "inr_siren_fwi",
+    "inr_siren_centered_fwi",
     "inr_lr_fwi",
     "inr_mpe_fwi",
     "inr_mpe_centered_fwi",
@@ -65,6 +76,13 @@ def build_model(config, method, params, device):
         )
     elif method == "inr_siren_fwi":
         model = INRSIREN(
+            int(cfg["hidden_features"]),
+            int(cfg["hidden_layers"]),
+            omega0=float(cfg.get("omega0", 30)),
+            **common,
+        )
+    elif method == "inr_siren_centered_fwi":
+        model = INRSIREN_CENTERED(
             int(cfg["hidden_features"]),
             int(cfg["hidden_layers"]),
             omega0=float(cfg.get("omega0", 30)),
@@ -193,7 +211,7 @@ def final_bias_parameter(model, method):
         for module in reversed(model.mlp):
             if isinstance(module, torch.nn.Linear):
                 return module.bias
-    if method in ("inr_mpe_centered_fwi", "inr_ig_centered_fwi"):
+    if method in ("inr_siren_centered_fwi", "inr_mpe_centered_fwi", "inr_ig_centered_fwi"):
         return None
     if method == "inr_ig_fwi":
         for module in reversed(model.fusion_mlp):
@@ -203,7 +221,7 @@ def final_bias_parameter(model, method):
 
 
 def set_final_bias(model, method, value):
-    if method in ("inr_mpe_centered_fwi", "inr_ig_centered_fwi"):
+    if method in ("inr_siren_centered_fwi", "inr_mpe_centered_fwi", "inr_ig_centered_fwi"):
         with torch.no_grad():
             model.final_bias.fill_(float(value))
         return
@@ -276,7 +294,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run one debug INR/transfer-learning epoch and plot the first adjoint gradient."
     )
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/experimental.yaml")
     parser.add_argument("--method", default="inr_ig_centered_fwi", choices=METHODS)
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--data-dir", default=None)
@@ -402,6 +420,11 @@ def main():
 
     delta_gamma = gamma_after - gamma_before
     mse_after = 0.5 * torch.mean((gamma_after - target_inner) ** 2)
+    grad_update_dot = torch.sum(gradient.detach() * delta_gamma.detach())
+    scaled_grad_update_dot = torch.sum(scaled_gradient.detach() * delta_gamma.detach())
+    grad_update_cosine = grad_update_dot / (
+        torch.linalg.vector_norm(gradient.detach()) * torch.linalg.vector_norm(delta_gamma.detach()) + 1e-30
+    )
 
     print(f"method: {args.method}")
     print(f"case: {args.case}")
@@ -421,6 +444,10 @@ def main():
             print(f"bias_grad_norm / total_param_grad_norm: {output_bias_grad_norm / param_norm:.6e}")
     print(f"adjoint_grad_norm: {tensor_norm(gradient):.6e}")
     print(f"scaled_grad_norm: {tensor_norm(scaled_gradient):.6e}")
+    print(f"<adjoint_grad, gamma_update>: {float(grad_update_dot.detach().cpu()):.6e}")
+    print(f"<scaled_grad, gamma_update>: {float(scaled_grad_update_dot.detach().cpu()):.6e}")
+    print(f"gradient/update cosine: {float(grad_update_cosine.detach().cpu()):.6e}")
+    print("negative gradient/update dot means the gamma update is locally downhill for the FWI cost")
     print(f"gamma mean before: {float(gamma_before.mean().detach().cpu()):.6e}")
     print(f"gamma mean after:  {float(gamma_after.mean().detach().cpu()):.6e}")
     print(tensor_stats(gamma_before, "gamma_before"))

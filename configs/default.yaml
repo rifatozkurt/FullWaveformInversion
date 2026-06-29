@@ -41,6 +41,20 @@ models:
     channels: [1, 16, 32, 64, 128]
     number_of_convolutions_per_block: 2
     batch_norm: true
+  segformer:
+    in_channels: 1
+    hidden_sizes: [24, 48, 96, 192]
+    depths: [2, 2, 2, 2]
+    num_attention_heads: [1, 2, 4, 8]
+    sr_ratios: [8, 4, 2, 1]
+    patch_sizes: [7, 3, 3, 3]
+    strides: [4, 2, 2, 2]
+    mlp_ratios: [4, 4, 4, 4]
+    decoder_hidden_size: 64
+    hidden_dropout_prob: 0.0
+    attention_probs_dropout_prob: 0.0
+    classifier_dropout_prob: 0.0
+    drop_path_rate: 0.0
 
 pretraining:
   seed: 30
@@ -59,6 +73,30 @@ pretraining:
   clipGrad: 5.0e-04
   l2: 1.0e-06
   costScaling: 1.0e+08
+
+segformer_pretraining:
+  seed: 30
+  split_seed: 2
+  numberOfSamples: 800
+  availableSamples: 800
+  trainingType: segmentation
+  model_type: SegFormer
+  batch_size: 4
+  lr: 3.0e-04
+  weight_decay: 1.0e-04
+  scheduler: cosine
+  epochs: 100
+  clipGrad: 1.0
+  dice_weight: 1.0
+  bce_pos_weight: auto
+  void_gamma_threshold: 0.5
+  eval_threshold: 0.5
+  void_prior: 0.01
+  gradient_normalization:
+    mode: robust_abs
+    quantile: 0.99
+    eps: 1.0e-08
+    clamp: 1.0
 
 experiments:
   cases: [1, 2, 3, 4]
@@ -134,6 +172,23 @@ experiments:
     l2: 1.0e-06
     costScaling: 1.0e+10
 
+  inr_siren_centered_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
   inr_lr_fwi:
     seed: 50
     rank: 32
@@ -164,8 +219,8 @@ experiments:
     align_corners: true
     swap_grid_coords: false
     output_mode: voidness
-    final_bias: -4.5
-    lr: 1.0e-03
+    final_bias: -5
+    lr: 1.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 35
@@ -182,12 +237,12 @@ experiments:
     features_per_level: 2
     hidden_features: 64
     hidden_layers: 2
-    grid_init_std: 1.0e-04
+    grid_init_std: 1.0e-02
     align_corners: true
     swap_grid_coords: false
     output_mode: voidness
     final_bias: -4.5
-    lr: 1.0e-03
+    lr: 1.0e-02
     alpha: -0.5
     beta: 0.2
     epochs: 35
@@ -230,7 +285,7 @@ experiments:
     base_resolution: 50
     per_level_scale: 1.05
     features_per_level: 2
-    grid_init_std: 1.0e-04
+    grid_init_std: 1.0e-02
     align_corners: true
     swap_grid_coords: false
     siren_hidden_features: 128
@@ -267,5 +322,18 @@ experiments:
     beta: 0.2
     epochs: 5
     clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
+  transfer_segformer_fwi:
+    seed: 99
+    pretrained_checkpoint: model_SegFormer_100_segmentation_800.pt
+    trainable_mode: all
+    lr: 3.0e-04
+    weight_decay: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 1.0
     l2: 1.0e-06
     costScaling: 1.0e+10

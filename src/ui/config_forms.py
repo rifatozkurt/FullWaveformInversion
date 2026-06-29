@@ -83,7 +83,7 @@ def default_form_values(config_path="configs/default.yaml", method_name="convent
             "base_resolution": exp.get("base_resolution", 50),
             "per_level_scale": exp.get("per_level_scale", 1.05),
             "features_per_level": exp.get("features_per_level", 2),
-            "grid_init_std": exp.get("grid_init_std", 1e-4),
+            "grid_init_std": exp.get("grid_init_std", 1e-2),
             "align_corners": exp.get("align_corners", True),
             "swap_grid_coords": exp.get("swap_grid_coords", False),
             "fusion_alpha": exp.get("fusion_alpha", 0.5),

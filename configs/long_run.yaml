@@ -4,7 +4,7 @@ paths:
   casestudy_data: data/casestudy
   pretrained_models: models/pretrained
   checkpoints: models/checkpoints
-  runs: runs/long_run
+  runs: runs/long_run_centered
 
 simulation:
   Lx: 0.1
@@ -134,6 +134,23 @@ experiments:
     l2: 1.0e-06
     costScaling: 1.0e+09
 
+  inr_siren_centered_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 500
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
   inr_lr_fwi:
     seed: 50
     rank: 32
@@ -168,7 +185,29 @@ experiments:
     lr: 1.0e-04
     alpha: -0.5
     beta: 0.2
-    epochs: 150
+    epochs: 500
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
+  inr_mpe_centered_fwi:
+    seed: 50
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 500
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
@@ -195,7 +234,34 @@ experiments:
     lr: 1.0e-04
     alpha: -0.5
     beta: 0.2
-    epochs: 150
+    epochs: 500
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
+  inr_ig_centered_fwi:
+    seed: 50
+    fusion_alpha: 0.5
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 500
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
