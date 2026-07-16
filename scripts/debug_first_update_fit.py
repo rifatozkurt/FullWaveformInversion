@@ -7,12 +7,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from src import adjoint
 from src.config import load_config
 from src.experiments.base import (
-    create_forward_solver,
-    create_initial_conditions,
     load_case_data,
+    model_path,
+    normalize_input_data,
     simulation_parameters,
     tensor_norm,
     tensor_stats,
@@ -27,10 +26,18 @@ from src.networks import (
     INR_MPE_CENTERED,
     INRSIREN,
     INRSIREN_CENTERED,
+    GradientSegFormer,
+    Unet,
+    initWeights,
+    normalize_gradient_for_transformer,
 )
+from src.pretrain_segformer import load_segformer_checkpoint
 
 
 ALIASES = {
+    "unet": "transfer_learning_fwi",
+    "segformer": "transfer_segformer_fwi",
+    "transformer": "transfer_segformer_fwi",
     "inr": "inr_fwi",
     "siren": "inr_siren_fwi",
     "siren_centered": "inr_siren_centered_fwi",
@@ -52,6 +59,22 @@ def make_coords(params, device):
 
 
 def build_model(method, cfg, gamma0, device):
+    if method == "transfer_learning_fwi":
+        channels = cfg["NNchannels"]
+        blocks = int(cfg["numberOfConvolutionsPerBlock"])
+        model = Unet(channels, blocks, gamma0, bnorm=True)
+        initWeights(model)
+        torch.nn.init.normal_(model.convolutionsUp[-1].weight, std=0.01, mean=0.7)
+        model.convolutionsUp[-1].bias.data.fill_(3)
+        return model.to(device)
+    if method == "transfer_segformer_fwi":
+        model = GradientSegFormer(
+            spec=cfg["model_spec"],
+            gamma_min=gamma0,
+            void_prior=float(cfg.get("void_prior", 0.01)),
+        )
+        return model.to(device)
+
     common = {
         "gamma0": gamma0,
         "output_mode": cfg.get("output_mode", "voidness"),
@@ -209,12 +232,27 @@ def main():
         description="Fit an INR to the first direct gamma update implied by one FWI adjoint gradient."
     )
     parser.add_argument("--config", default="configs/experimental.yaml")
-    parser.add_argument("--method", default="mpe_centered", choices=METHODS)
+    parser.add_argument("--method", default="transfer_segformer_fwi", choices=METHODS)
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output-dir", default="temp/first_update_fit")
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--unet-init", default="legacy_random", choices=("pretrained", "legacy_random"))
+    parser.add_argument("--segformer-init", default="random", choices=("pretrained", "random"))
+    parser.add_argument("--segformer-checkpoint", default=None)
+    parser.add_argument(
+        "--unet-default-lr",
+        type=float,
+        default=1e-8,
+        help="Used for U-Net supervised fitting when --lr is omitted.",
+    )
+    parser.add_argument(
+        "--segformer-default-lr",
+        type=float,
+        default=1e-6,
+        help="Used for SegFormer supervised fitting when --lr is omitted.",
+    )
+    parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--lr", type=float, default=None, help="Supervised optimizer lr. Defaults to the method config lr.")
     parser.add_argument("--step-mode", default="auto", choices=("auto", "manual"))
     parser.add_argument("--direct-step-scale", type=float, default=1.0)
@@ -228,6 +266,7 @@ def main():
     config = load_config(args.config)
     method = ALIASES.get(args.method, args.method)
     cfg = config["experiments"][method]
+    exp_cfg = config["experiments"]
     params = simulation_parameters(config)
     device = torch.device(args.device)
     data_dir = Path(args.data_dir or config["paths"]["casestudy_data"])
@@ -239,39 +278,79 @@ def main():
     saved_epochs = {int(item) for item in args.saved_epochs.split(",") if item.strip()} | {0, args.epochs}
 
     torch.manual_seed(int(cfg.get("seed", 50)))
-    model = build_model(method, cfg, params["gamma0"], device)
+    if method == "transfer_learning_fwi":
+        unet_cfg = {
+            **cfg,
+            "NNchannels": exp_cfg["NNchannels"],
+            "numberOfConvolutionsPerBlock": exp_cfg["numberOfConvolutionsPerBlock"],
+        }
+        model = build_model(method, unet_cfg, params["gamma0"], device)
+        if args.unet_init == "pretrained":
+            sample = int(exp_cfg["pretrain_samples"][0])
+            path = model_path(
+                config,
+                exp_cfg["modelType"],
+                int(exp_cfg["epochs_pretrain"]),
+                "supervised",
+                sample,
+                exp_cfg["NNchannels"],
+            )
+            model.load_state_dict(torch.load(path, map_location=device))
+            print(f"Loaded pretrained U-Net from {path}")
+    elif method == "transfer_segformer_fwi":
+        if args.segformer_init == "pretrained":
+            checkpoint_path = Path(args.segformer_checkpoint or cfg["pretrained_checkpoint"])
+            if not checkpoint_path.is_absolute() and not checkpoint_path.exists():
+                checkpoint_path = Path(config["paths"]["pretrained_models"]) / checkpoint_path
+            model, segformer_checkpoint = load_segformer_checkpoint(checkpoint_path, device)
+            segformer_norm_cfg = dict(segformer_checkpoint["gradient_normalization"])
+            print(f"Loaded pretrained SegFormer from {checkpoint_path}")
+        else:
+            segformer_cfg = {
+                **cfg,
+                "model_spec": config.get("models", {}).get("segformer", {}),
+                "void_prior": config.get("segformer_pretraining", {}).get("void_prior", 0.01),
+            }
+            model = build_model(method, segformer_cfg, params["gamma0"], device)
+            segformer_norm_cfg = dict(
+                config.get("segformer_pretraining", {}).get(
+                    "gradient_normalization",
+                    {
+                        "mode": "robust_abs",
+                        "quantile": 0.99,
+                        "eps": 1e-8,
+                        "clamp": 1.0,
+                    },
+                )
+            )
+    else:
+        model = build_model(method, cfg, params["gamma0"], device)
     coords = make_coords(params, device)
-    gamma_case, um, source = load_case_data(args.case, data_dir, params, device)
+    gamma_case, initial_gradient, _um, _source = load_case_data(args.case, data_dir, params, device, load_gradient=True)
     target_physical_gamma = gamma_case[0, 0, 1:-1, 1:-1]
-    u0, u1 = create_initial_conditions(params, device)
 
-    with torch.no_grad():
-        gamma_initial = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1).detach()
+    unet_input = None
+    segformer_input = None
+    if method == "transfer_learning_fwi":
+        unet_input = normalize_input_data(initial_gradient).to(device)
+        with torch.no_grad():
+            gamma_initial = model(unet_input)[0, 0].detach()
+    elif method == "transfer_segformer_fwi":
+        segformer_input = normalize_gradient_for_transformer(
+            initial_gradient.to(device),
+            **segformer_norm_cfg,
+        ).detach()
+        with torch.no_grad():
+            gamma_initial = model(segformer_input)[0, 0].detach()
+    else:
+        with torch.no_grad():
+            gamma_initial = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1).detach()
 
-    gamma_full = torch.ones((1, 1, params["Nx"] + 3, params["Ny"] + 3), device=device)
-    gamma_full[:, :, 1:-1, 1:-1] = gamma_initial
-
-    cost, gradient = adjoint.getAdjointGradient(
-        create_forward_solver(params, device),
-        u0,
-        u1,
-        params["c"],
-        params["rho"],
-        gamma_full.detach(),
-        source,
-        params["Nx"],
-        params["dx"],
-        params["Ny"],
-        params["dy"],
-        params["N"],
-        params["dt"],
-        params["numberOfSources"],
-        um.to(device),
-        params["selx"],
-        params["sely"],
-        device,
-    )
-    gradient = gradient.to(device=device, dtype=torch.float32)
+    # Use the saved first conventional gradient so every architecture fits the
+    # same case-specific first-gradient update direction. This avoids
+    # recomputing the adjoint while keeping each architecture's own initial
+    # gamma as the baseline it must update from.
+    gradient = initial_gradient[0, 0].to(device=device, dtype=torch.float32)
     effective_gradient = gradient * float(cfg["costScaling"])
 
     if args.step_mode == "auto":
@@ -294,9 +373,15 @@ def main():
         loss_scale = torch.tensor(1.0, device=device)
     loss_scale = torch.clamp(loss_scale, min=float(args.min_loss_scale))
 
+    supervised_lr = float(args.lr if args.lr is not None else cfg["lr"])
+    if method == "transfer_learning_fwi" and args.lr is None:
+        supervised_lr = float(args.unet_default_lr)
+    if method == "transfer_segformer_fwi" and args.lr is None:
+        supervised_lr = float(args.segformer_default_lr)
+
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=float(args.lr if args.lr is not None else cfg["lr"]),
+        lr=supervised_lr,
         weight_decay=float(cfg.get("l2", 0.0)),
     )
     rows = []
@@ -304,8 +389,8 @@ def main():
 
     
     print(
-        f"method={method} case={args.case} initial_fwi_cost={float(cost.detach().cpu()):.6e} "
-        f"direct_step_scale={direct_step_scale:.6e}"
+        f"method={method} case={args.case} saved_first_gradient=true "
+        f"direct_step_scale={direct_step_scale:.6e} supervised_lr={supervised_lr:.6e}"
     )
     print(
         f"loss_normalization={args.loss_normalization} loss_scale={float(loss_scale.cpu()):.6e} "
@@ -315,14 +400,24 @@ def main():
     for epoch in range(args.epochs + 1):
         if epoch > 0:
             optimizer.zero_grad(set_to_none=True)
-            gamma_pred = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1)
+            if method == "transfer_learning_fwi":
+                gamma_pred = model(unet_input)[0, 0]
+            elif method == "transfer_segformer_fwi":
+                gamma_pred = model(segformer_input)[0, 0]
+            else:
+                gamma_pred = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1)
             update_residual = gamma_pred - gamma_initial - update_target
             loss = torch.mean((update_residual / loss_scale) ** 2)
             loss.backward()
             optimizer.step()
 
         with torch.no_grad():
-            gamma_eval = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1)
+            if method == "transfer_learning_fwi":
+                gamma_eval = model(unet_input)[0, 0]
+            elif method == "transfer_segformer_fwi":
+                gamma_eval = model(segformer_input)[0, 0]
+            else:
+                gamma_eval = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1)
             update_pred = gamma_eval - gamma_initial
             update_error = update_pred - update_target
             update_mse = torch.mean(update_error**2)
@@ -336,7 +431,7 @@ def main():
                 **tensor_stats(update_target, "target_update"),
                 "direct_step_scale": float(direct_step_scale),
                 "loss_scale": float(loss_scale.cpu()),
-                "initial_fwi_cost": float(cost.detach().cpu()),
+                "initial_fwi_cost": float("nan"),
                 "raw_adjoint_grad_norm": tensor_norm(gradient),
                 "effective_adjoint_grad_norm": tensor_norm(effective_gradient),
             }
@@ -391,14 +486,16 @@ def main():
                 f"config: {args.config}",
                 f"device: {args.device}",
                 f"epochs: {args.epochs}",
-                f"supervised_lr: {args.lr if args.lr is not None else cfg['lr']}",
+                f"unet_init: {args.unet_init if method == 'transfer_learning_fwi' else 'n/a'}",
+                f"segformer_init: {args.segformer_init if method == 'transfer_segformer_fwi' else 'n/a'}",
+                f"supervised_lr: {supervised_lr}",
                 f"costScaling: {cfg['costScaling']}",
                 f"step_mode: {args.step_mode}",
                 f"direct_step_scale: {direct_step_scale:.12e}",
                 f"target_max_delta_gamma: {args.target_max_delta_gamma:.12e}",
                 f"loss_normalization: {args.loss_normalization}",
                 f"loss_scale: {float(loss_scale.cpu()):.12e}",
-                f"initial_fwi_cost: {float(cost.detach().cpu()):.12e}",
+                "initial_fwi_cost: n/a_saved_gradient_used",
             ]
         )
         + "\n",

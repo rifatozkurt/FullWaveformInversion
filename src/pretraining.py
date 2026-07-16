@@ -69,7 +69,12 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     numberOfSamples = int(cfg["numberOfSamples"])
     initialGradient = torch.zeros((numberOfSamples, 1, Nx + 1, Ny + 1), dtype=torch.float32, device=device)
     gamma = torch.ones((numberOfSamples, 1, Nx + 3, Ny + 3), dtype=torch.float32, device=device)
-    idx_numberOfSamples = random.sample(range(int(cfg["availableSamples"])), numberOfSamples)
+    if "sample_ids" in cfg:
+        idx_numberOfSamples = [int(item) for item in cfg["sample_ids"][:numberOfSamples]]
+        if len(idx_numberOfSamples) != numberOfSamples:
+            raise ValueError("pretraining.sample_ids must contain at least numberOfSamples entries")
+    else:
+        idx_numberOfSamples = random.sample(range(int(cfg["availableSamples"])), numberOfSamples)
 
     print(f"Loading {numberOfSamples} pretraining sample(s) from {destinationFolder}", flush=True)
     load_print_every = max(1, numberOfSamples // 20)

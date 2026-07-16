@@ -1,5 +1,5 @@
 paths:
-  train_data: data/train
+  train_data: data/extended
   test_data: data/test
   casestudy_data: data/casestudy
   pretrained_models: models/pretrained
@@ -28,7 +28,7 @@ source:
 data_generation:
   seed: 2
   train:
-    number_of_cases: 5
+    number_of_cases: 9000
     number_of_damages: 1
     factor_to_avoid_inverse_crime: 2
   test:
@@ -241,8 +241,8 @@ experiments:
     align_corners: true
     swap_grid_coords: false
     output_mode: voidness
-    final_bias: -4.5
-    lr: 1.0e-02
+    final_bias: -4
+    lr: 3.0e-02
     alpha: -0.5
     beta: 0.2
     epochs: 35

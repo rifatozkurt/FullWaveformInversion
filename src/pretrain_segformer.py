@@ -1,5 +1,8 @@
 import csv
+import argparse
 import random
+import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -8,11 +11,19 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+if __package__ in (None, ""):
+    ROOT = Path(__file__).resolve().parents[1]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
 from src import io
 from src import networks as NN
+from src.config import load_config
 from src.experiments.base import get_device, simulation_parameters
 
 
+
+# this is a very useful loss for our case
 def dice_loss_from_logits(logits, target, eps=1e-6):
     prob = torch.sigmoid(logits)
     dims = tuple(range(1, prob.ndim))
@@ -128,7 +139,12 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
 
     number_of_samples = int(cfg["numberOfSamples"])
     available_samples = int(cfg["availableSamples"])
-    sample_ids = random.sample(range(available_samples), number_of_samples)
+    if "sample_ids" in cfg:
+        sample_ids = [int(item) for item in cfg["sample_ids"][:number_of_samples]]
+        if len(sample_ids) != number_of_samples:
+            raise ValueError("segformer_pretraining.sample_ids must contain at least numberOfSamples entries")
+    else:
+        sample_ids = random.sample(range(available_samples), number_of_samples)
     gradients = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
     masks = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
 
@@ -285,3 +301,34 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         for key, value in paths.items():
             print(f"{key}: {value}", flush=True)
     return best_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/default.yaml")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    run_dir = io.create_run_dir(
+        io.ensure_dir(config["paths"].get("runs", "runs")) / "pretraining_segformer",
+        prefix="pretraining_segformer",
+    )
+    io.ensure_dirs([run_dir / "figures", run_dir / "histories", run_dir / "outputs"])
+    shutil.copy2(args.config, run_dir / "config.yaml")
+
+    start = time.perf_counter()
+    model_path = pretrain_segformer(config, run_dir=run_dir)
+    elapsed = time.perf_counter() - start
+    (run_dir / "runtime.txt").write_text(
+        "run_type: pretraining_segformer\nmodel_path: {}\nruntime_seconds: {:.6f}\n".format(
+            model_path,
+            elapsed,
+        ),
+        encoding="utf-8",
+    )
+    print("Saved model to {}".format(model_path))
+    print("Saved SegFormer pretraining run to {}".format(run_dir))
+
+
+if __name__ == "__main__":
+    main()
