@@ -18,6 +18,21 @@ from src import adjoint, io, utils
 from src.data_generation import _prepare_generation
 
 
+def _report_cuda_memory(device, label):
+    if device.type != "cuda":
+        return
+    torch.cuda.synchronize(device)
+    gib = 1024 ** 3
+    print(
+        f"CUDA memory [{label}]: "
+        f"allocated={torch.cuda.memory_allocated(device) / gib:.2f} GiB, "
+        f"reserved={torch.cuda.memory_reserved(device) / gib:.2f} GiB, "
+        f"peak_allocated={torch.cuda.max_memory_allocated(device) / gib:.2f} GiB, "
+        f"peak_reserved={torch.cuda.max_memory_reserved(device) / gib:.2f} GiB",
+        flush=True,
+    )
+
+
 def _forward_receiver_batch(solver, gamma, context):
     """Run fine-grid cases together and retain receiver traces only."""
     fine = context["fine"]
@@ -181,6 +196,7 @@ def generate_dataset_colab(
     number_of_cases=None,
     case_batch_size=2,
     overwrite=True,
+    report_gpu_memory=False,
 ):
     """Generate independent cases in GPU batches for large-memory accelerators."""
     data_cfg = config["data_generation"]
@@ -217,6 +233,10 @@ def generate_dataset_colab(
     started = time.perf_counter()
     for offset in tqdm(range(0, number_of_cases, case_batch_size), desc=f"{split} batches"):
         batch_ids = all_case_ids[offset : offset + case_batch_size]
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+        if report_gpu_memory:
+            _report_cuda_memory(device, f"cases {batch_ids[0]}-{batch_ids[-1]} start")
         materials = []
         parameters = []
         for _ in batch_ids:
@@ -239,7 +259,11 @@ def generate_dataset_colab(
         gamma_fine = torch.cat(materials, dim=0)
         measurements = _forward_receiver_batch(fine["solver"], gamma_fine, context)
         measurements = measurements[..., (factor - 1)::factor]
+        if report_gpu_memory:
+            _report_cuda_memory(device, f"cases {batch_ids[0]}-{batch_ids[-1]} after fine forward")
         gradients = _adjoint_gradient_batch(context, measurements)
+        if report_gpu_memory:
+            _report_cuda_memory(device, f"cases {batch_ids[0]}-{batch_ids[-1]} after adjoint")
         gamma_coarse = gamma_fine[:, 0, 1:-1:factor, 1:-1:factor]
 
         for index, case_id in enumerate(batch_ids):
@@ -255,9 +279,10 @@ def generate_dataset_colab(
         del gamma_fine, measurements, gradients, gamma_coarse, materials
         if device.type == "cuda":
             torch.cuda.empty_cache()
+        if report_gpu_memory:
+            _report_cuda_memory(device, f"cases {batch_ids[0]}-{batch_ids[-1]} after cleanup")
 
     source_path = output_dir / "source.h5"
     if overwrite or not source_path.exists():
         io.save_hdf(source_path, source_values, key="f")
     print(f"Generated {number_of_cases} cases in {time.perf_counter() - started:.2f}s")
-
