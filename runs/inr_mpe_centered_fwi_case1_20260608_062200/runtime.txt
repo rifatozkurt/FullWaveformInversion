@@ -1,3 +1,0 @@
-method: inr_mpe_centered_fwi
-case_id: 1
-runtime_seconds: 142.722056
