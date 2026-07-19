@@ -67,8 +67,20 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     io.ensure_dir(output_dir)
 
     numberOfSamples = int(cfg["numberOfSamples"])
-    initialGradient = torch.zeros((numberOfSamples, 1, Nx + 1, Ny + 1), dtype=torch.float32, device=device)
-    gamma = torch.ones((numberOfSamples, 1, Nx + 3, Ny + 3), dtype=torch.float32, device=device)
+    # Legacy configs preload the complete dataset to the training device. Large
+    # comparison runs can opt into CPU storage and move only each mini-batch.
+    preload_to_device = bool(cfg.get("preload_to_device", True))
+    storage_device = device if preload_to_device else torch.device("cpu")
+    initialGradient = torch.zeros(
+        (numberOfSamples, 1, Nx + 1, Ny + 1),
+        dtype=torch.float32,
+        device=storage_device,
+    )
+    gamma = torch.ones(
+        (numberOfSamples, 1, Nx + 3, Ny + 3),
+        dtype=torch.float32,
+        device=storage_device,
+    )
     if "sample_ids" in cfg:
         idx_numberOfSamples = [int(item) for item in cfg["sample_ids"][:numberOfSamples]]
         if len(idx_numberOfSamples) != numberOfSamples:
@@ -86,11 +98,11 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
             )
         initialGradient[idx, 0] = torch.tensor(
             io.load_hdf(destinationFolder / f"gradient{file_idx}.h5")
-        ).to(device).to(torch.float32)
+        ).to(storage_device).to(torch.float32)
 
         gamma[idx, 0, 1:-1, 1:-1] = torch.tensor(
             io.load_hdf(destinationFolder / f"material{file_idx}.h5")
-        ).to(device).to(torch.float32)
+        ).to(storage_device).to(torch.float32)
 
     trainingType = cfg["trainingType"]
     NNchannels = unet_cfg.get("channels", cfg["NNchannels"])
@@ -101,7 +113,8 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         )
     )
     batch_norm = bool(unet_cfg.get("batch_norm", True))
-    batchSize = numberOfSamples // int(cfg["batchDivisor"])
+    legacy_batch_size = max(1, numberOfSamples // int(cfg["batchDivisor"]))
+    batchSize = max(1, int(cfg.get("batch_size", legacy_batch_size)))
 
     inputData = initialGradient
     inputData = (inputData - torch.amin(inputData, (2, 3), keepdim=True)) / (
@@ -114,8 +127,17 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         dataset, [0.8, 0.2], generator=torch.Generator().manual_seed(int(cfg["split_seed"]))
     )
 
+    batchSize = min(batchSize, max(1, len(datasetTraining)))
+    validation_batch_size = max(
+        1,
+        int(cfg.get("validation_batch_size", len(datasetValidation))),
+    )
+    validation_batch_size = min(validation_batch_size, max(1, len(datasetValidation)))
     dataloaderTraining = DataLoader(datasetTraining, batch_size=batchSize)
-    dataloaderValidation = DataLoader(datasetValidation, batch_size=len(datasetValidation))
+    dataloaderValidation = DataLoader(
+        datasetValidation,
+        batch_size=validation_batch_size,
+    )
     number_training_batches = len(dataloaderTraining)
     if run_dir is not None:
         outputs_dir = io.ensure_dir(Path(run_dir) / "outputs")
@@ -123,11 +145,14 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         np.savetxt(outputs_dir / "pretraining_training_subset_indices.txt", datasetTraining.indices, fmt="%d")
         np.savetxt(outputs_dir / "pretraining_validation_subset_indices.txt", datasetValidation.indices, fmt="%d")
     print(
-        "Pretraining setup: epochs={}, batch_size={}, training_batches={}, validation_samples={}".format(
+        "Pretraining setup: epochs={}, batch_size={}, training_batches={}, "
+        "validation_batch_size={}, validation_samples={}, storage_device={}".format(
             int(cfg["epochs"]),
             batchSize,
             number_training_batches,
+            validation_batch_size,
             len(datasetValidation),
+            storage_device,
         ),
         flush=True,
     )
@@ -159,6 +184,7 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     trainingCostHistory = np.zeros(epochs)
     trainingMSEHistory = np.zeros(epochs)
     validationCostHistory = np.zeros(epochs)
+    print_every_batches = max(1, int(cfg.get("print_every_batches", 1)))
     start = time.perf_counter()
     # Legacy compatibility: Pretraining.py resets beta to zero after creating
     # the scheduler lambda. Because the lambda closes over beta, the original
@@ -182,27 +208,44 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
             optimizer.step()
             scheduler.step()
             trainingCostHistory[epoch] += cost.detach().cpu()
-            print(
-                "Epoch {}/{} batch {}/{} training_cost={:.6E}".format(
-                    epoch + 1,
-                    epochs,
-                    batch + 1,
-                    number_training_batches,
-                    float(cost.detach().cpu()),
-                ),
-                flush=True,
-            )
+            if (
+                batch == 0
+                or batch + 1 == number_training_batches
+                or (batch + 1) % print_every_batches == 0
+            ):
+                print(
+                    "Epoch {}/{} batch {}/{} training_cost={:.6E}".format(
+                        epoch + 1,
+                        epochs,
+                        batch + 1,
+                        number_training_batches,
+                        float(cost.detach().cpu()),
+                    ),
+                    flush=True,
+                )
 
         trainingCostHistory[epoch] /= batch + 1
         trainingMSEHistory[epoch] /= batch + 1
 
         model.eval()
-        sample = next(iter(dataloaderValidation))
-        sample[0] = sample[0].to(device)
-        sample[1] = sample[1].to(device)
-        gammaPred = torch.ones((len(sample[0]), 1, Nx + 3, Ny + 3), device=device, dtype=torch.float32)
-        gammaPred[:, :, 1:-1, 1:-1] = model(sample[0])
-        validationCostHistory[epoch] = 0.5 * torch.mean((gammaPred.detach().cpu() - sample[1].cpu()) ** 2)
+        validation_cost_sum = 0.0
+        validation_samples = 0
+        with torch.no_grad():
+            for sample in dataloaderValidation:
+                sample[0] = sample[0].to(device)
+                sample[1] = sample[1].to(device)
+                gammaPred = torch.ones(
+                    (len(sample[0]), 1, Nx + 3, Ny + 3),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                gammaPred[:, :, 1:-1, 1:-1] = model(sample[0])
+                batch_validation_cost = 0.5 * torch.mean((gammaPred - sample[1]) ** 2)
+                validation_cost_sum += (
+                    float(batch_validation_cost.detach().cpu()) * len(sample[0])
+                )
+                validation_samples += len(sample[0])
+        validationCostHistory[epoch] = validation_cost_sum / max(1, validation_samples)
 
         if epoch % 10 == 0:
             elapsed_time = time.perf_counter() - start

@@ -1,5 +1,6 @@
 import csv
 import argparse
+import math
 import random
 import shutil
 import sys
@@ -78,8 +79,62 @@ def save_segformer_pretraining_outputs(run_dir, rows):
     fig.savefig(plot_path, dpi=160)
     plt.close(fig)
 
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+    ax.plot(epochs, train_loss, label="Training loss", color="#2f5aa8", linewidth=2)
+    ax.plot(epochs, val_loss, label="Validation loss", color="#b64040", linewidth=2)
+    ax.set_title("SegFormer pretraining loss history (log scale)")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("loss")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    log_plot_path = figures_dir / "segformer_pretraining_loss_history_log.png"
+    fig.savefig(log_plot_path, dpi=160)
+    plt.close(fig)
+
     np.savez(outputs_dir / "segformer_pretraining_metrics.npz", rows=np.array(rows, dtype=object))
-    return {"metrics_csv": csv_path, "plot_path": plot_path}
+    return {
+        "metrics_csv": csv_path,
+        "plot_path": plot_path,
+        "log_plot_path": log_plot_path,
+    }
+
+
+def build_pretraining_scheduler(optimizer, cfg, steps_per_epoch):
+    """Build a scheduler and report whether it advances per optimizer step."""
+    scheduler_name = str(cfg.get("scheduler", "cosine")).lower()
+    epochs = max(1, int(cfg["epochs"]))
+    if scheduler_name in ("none", "constant"):
+        return None, False
+    if scheduler_name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs), False
+    if scheduler_name != "warmup_cosine":
+        raise ValueError(f"Unknown SegFormer pretraining scheduler: {scheduler_name}")
+
+    total_steps = max(1, epochs * max(1, int(steps_per_epoch)))
+    warmup_steps = max(0, int(cfg.get("warmup_epochs", 0)) * max(1, int(steps_per_epoch)))
+    warmup_start_factor = float(cfg.get("warmup_start_factor", 0.1))
+    min_lr_ratio = float(cfg.get("min_lr_ratio", 0.0))
+    if not (0.0 < warmup_start_factor <= 1.0):
+        raise ValueError("warmup_start_factor must be in (0, 1]")
+    if not (0.0 <= min_lr_ratio <= 1.0):
+        raise ValueError("min_lr_ratio must be in [0, 1]")
+
+    def lr_factor(step):
+        step = min(max(0, int(step)), total_steps)
+        if warmup_steps > 0 and step < warmup_steps:
+            progress = step / max(1, warmup_steps)
+            return warmup_start_factor + (1.0 - warmup_start_factor) * progress
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, (step - warmup_steps) / decay_steps))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor), True
+
+
+def checkpoint_path_for_metric(primary_path, metric):
+    return primary_path.with_name(primary_path.stem + f"_best_{metric}" + primary_path.suffix)
 
 
 def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device):
@@ -197,17 +252,16 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         lr=float(cfg["lr"]),
         weight_decay=float(cfg["weight_decay"]),
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=max(1, int(cfg["epochs"])),
-    ) if cfg.get("scheduler", "cosine") == "cosine" else None
-
     epochs = int(cfg["epochs"])
+    scheduler, scheduler_per_step = build_pretraining_scheduler(
+        optimizer,
+        cfg,
+        steps_per_epoch=len(train_loader),
+    )
     dice_weight = float(cfg["dice_weight"])
     eval_threshold = float(cfg["eval_threshold"])
     rows = []
-    best_val = float("inf")
-    best_path = Path(output_dir) / (
+    primary_path = Path(output_dir) / (
         "model_"
         + cfg.get("model_type", "SegFormer")
         + "_"
@@ -218,13 +272,31 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         + str(number_of_samples)
         + ".pt"
     )
+    metric_paths = {
+        "val_loss": checkpoint_path_for_metric(primary_path, "val_loss"),
+        "dice_score": checkpoint_path_for_metric(primary_path, "dice_score"),
+    }
+    best_metrics = {"val_loss": float("inf"), "dice_score": -float("inf")}
+    checkpoint_selection = str(cfg.get("checkpoint_selection", "val_loss"))
+    if checkpoint_selection not in best_metrics:
+        raise ValueError(
+            "segformer_pretraining.checkpoint_selection must be val_loss or dice_score"
+        )
+    early_stopping_patience = cfg.get("early_stopping_patience")
+    early_stopping_patience = (
+        None if early_stopping_patience is None else int(early_stopping_patience)
+    )
+    minimum_epochs = int(cfg.get("minimum_epochs", 1))
+    selection_epochs_without_improvement = 0
 
     start = time.perf_counter()
+    print_every_batches = max(1, int(cfg.get("print_every_batches", 1)))
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
         train_bce = 0.0
         train_dice = 0.0
+        train_grad_norm = 0.0
         for batch, (gradient, target) in enumerate(train_loader):
             gradient = gradient.to(device)
             target = target.to(device)
@@ -234,22 +306,32 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
             dice_loss = dice_loss_from_logits(logits, target)
             loss = bce_loss + dice_weight * dice_loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg["clipGrad"]))
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), float(cfg["clipGrad"])
+            )
             optimizer.step()
+            if scheduler is not None and scheduler_per_step:
+                scheduler.step()
             train_loss += float(loss.detach().cpu())
             train_bce += float(bce_loss.detach().cpu())
             train_dice += float(dice_loss.detach().cpu())
-            print(
-                "Epoch {}/{} batch {}/{} train_loss={:.6E}".format(
-                    epoch + 1,
-                    epochs,
-                    batch + 1,
-                    len(train_loader),
-                    float(loss.detach().cpu()),
-                ),
-                flush=True,
-            )
-        if scheduler is not None:
+            train_grad_norm += float(grad_norm.detach().cpu())
+            if (
+                batch == 0
+                or batch + 1 == len(train_loader)
+                or (batch + 1) % print_every_batches == 0
+            ):
+                print(
+                    "Epoch {}/{} batch {}/{} train_loss={:.6E}".format(
+                        epoch + 1,
+                        epochs,
+                        batch + 1,
+                        len(train_loader),
+                        float(loss.detach().cpu()),
+                    ),
+                    flush=True,
+                )
+        if scheduler is not None and not scheduler_per_step:
             scheduler.step()
 
         train_batches = max(1, len(train_loader))
@@ -259,12 +341,23 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
             "train_loss": train_loss / train_batches,
             "train_bce_loss": train_bce / train_batches,
             "train_dice_loss": train_dice / train_batches,
+            "train_grad_norm": train_grad_norm / train_batches,
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
             **val_metrics,
         }
         rows.append(row)
 
-        if row["val_loss"] < best_val:
-            best_val = row["val_loss"]
+        improved_metrics = []
+        for metric in best_metrics:
+            improved = (
+                row[metric] < best_metrics[metric]
+                if metric == "val_loss"
+                else row[metric] > best_metrics[metric]
+            )
+            if not improved:
+                continue
+            best_metrics[metric] = row[metric]
+            improved_metrics.append(metric)
             checkpoint = {
                 "model_state_dict": model.state_dict(),
                 "architecture": model.architecture_dict(),
@@ -275,8 +368,17 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
                 "training_config": dict(cfg),
                 "epoch": epoch + 1,
                 "validation_metrics": val_metrics,
+                "checkpoint_metric": metric,
+                "checkpoint_metric_value": float(row[metric]),
             }
-            torch.save(checkpoint, best_path)
+            torch.save(checkpoint, metric_paths[metric])
+            if metric == checkpoint_selection:
+                torch.save(checkpoint, primary_path)
+
+        if checkpoint_selection in improved_metrics:
+            selection_epochs_without_improvement = 0
+        else:
+            selection_epochs_without_improvement += 1
 
         elapsed = time.perf_counter() - start
         print(
@@ -296,11 +398,26 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         if progress_callback is not None:
             progress_callback(epoch, epochs, row["train_loss"], row["val_loss"])
 
+        if (
+            early_stopping_patience is not None
+            and epoch + 1 >= minimum_epochs
+            and selection_epochs_without_improvement >= early_stopping_patience
+        ):
+            print(
+                "Early stopping after epoch {}: {} did not improve for {} epoch(s).".format(
+                    epoch + 1,
+                    checkpoint_selection,
+                    selection_epochs_without_improvement,
+                ),
+                flush=True,
+            )
+            break
+
     if run_dir is not None and rows:
         paths = save_segformer_pretraining_outputs(run_dir, rows)
         for key, value in paths.items():
             print(f"{key}: {value}", flush=True)
-    return best_path
+    return primary_path
 
 
 def main():

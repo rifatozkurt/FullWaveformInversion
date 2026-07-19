@@ -1,0 +1,61 @@
+# Opt-in SegFormer stabilization profile. It overlays experimental.yaml; the
+# existing experiment configs and comparison workflow remain unchanged.
+base_config: experimental.yaml
+
+overrides:
+  paths:
+    train_data: data/raw
+    pretrained_models: models/improve_transformer
+    runs: runs/improve_transformer
+
+  models:
+    segformer:
+      # Keep the proven encoder/patch geometry and spend the extra capacity in
+      # the multi-scale decoder. This remains substantially smaller than B0.
+      decoder_hidden_size: 256
+      hidden_dropout_prob: 0.0
+      attention_probs_dropout_prob: 0.0
+      classifier_dropout_prob: 0.05
+      drop_path_rate: 0.02
+      decoder_norm: batch_no_running
+      decoder_norm_groups: 8
+
+  segformer_pretraining:
+    numberOfSamples: 1000
+    availableSamples: 1000
+    batch_size: 16
+    lr: 1.5e-04
+    weight_decay: 1.0e-03
+    scheduler: warmup_cosine
+    warmup_epochs: 3
+    warmup_start_factor: 0.1
+    min_lr_ratio: 0.05
+    epochs: 100
+    clipGrad: 1.0
+    # Class weighting and segmentation loss are intentionally unchanged.
+    dice_weight: 1.0
+    bce_pos_weight: auto
+    checkpoint_selection: dice_score
+    minimum_epochs: 50
+    early_stopping_patience: 25
+    # Avoid thousands of console lines on the extended dataset. CSV logging is
+    # still performed every epoch.
+    print_every_batches: 10
+    void_prior: 0.01
+
+  experiments:
+    pretrain_samples: [1000]
+    transfer_segformer_fwi:
+      pretrained_checkpoint: model_SegFormer_100_segmentation_1000.pt
+      trainable_mode: decoder_only
+      optimization_model_mode: eval
+      lr: 1.0e-04
+      weight_decay: 0.0
+      alpha: -0.5
+      beta: 0.2
+      epochs: 15
+      clipGrad: 0.5
+      costScaling: 1.0e+10
+      record_post_step: true
+      restore_best_observed: true
+      early_stopping_patience: 8

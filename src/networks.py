@@ -70,11 +70,15 @@ class SegFormerSpec:
     patch_sizes: tuple = (7, 3, 3, 3)
     strides: tuple = (4, 2, 2, 2)
     mlp_ratios: tuple = (4, 4, 4, 4)
+    # Backward-compatible fallback. Final experiments explicitly override this
+    # with decoder_hidden_size: 256 in configs/extended.yaml.
     decoder_hidden_size: int = 64
     hidden_dropout_prob: float = 0.0
     attention_probs_dropout_prob: float = 0.0
     classifier_dropout_prob: float = 0.0
     drop_path_rate: float = 0.0
+    decoder_norm: str = "batch"
+    decoder_norm_groups: int = 8
 
     @classmethod
     def from_dict(cls, values):
@@ -122,6 +126,16 @@ class SegFormerSpec:
                 raise ValueError(
                     "SegFormer hidden size must be divisible by attention heads "
                     f"at stage {stage}: {hidden_size} % {heads} != 0"
+                )
+        if self.decoder_norm not in ("batch", "batch_no_running", "group"):
+            raise ValueError(
+                "SegFormer decoder_norm must be batch, batch_no_running, or group"
+            )
+        if self.decoder_norm == "group":
+            groups = int(self.decoder_norm_groups)
+            if groups < 1 or self.decoder_hidden_size % groups != 0:
+                raise ValueError(
+                    "decoder_hidden_size must be divisible by decoder_norm_groups"
                 )
 
 
@@ -200,6 +214,16 @@ class GradientSegFormer(torch.nn.Module):
             drop_path_rate=float(self.spec.drop_path_rate),
         )
         self.segformer = SegformerForSemanticSegmentation(config)
+        if self.spec.decoder_norm == "batch_no_running":
+            self.segformer.decode_head.batch_norm = torch.nn.BatchNorm2d(
+                int(self.spec.decoder_hidden_size),
+                track_running_stats=False,
+            )
+        elif self.spec.decoder_norm == "group":
+            self.segformer.decode_head.batch_norm = torch.nn.GroupNorm(
+                num_groups=int(self.spec.decoder_norm_groups),
+                num_channels=int(self.spec.decoder_hidden_size),
+            )
         self.register_buffer("gamma_min", torch.tensor(float(gamma_min), dtype=torch.float32))
         self.reset_classifier_bias()
 

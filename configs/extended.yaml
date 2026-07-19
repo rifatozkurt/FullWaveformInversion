@@ -1,0 +1,371 @@
+# Full, standalone configuration for the 15,000-case model-scaling run.
+# This is experimental.yaml with the finalized SegFormer improvements and
+# large-dataset-safe comparative-pretraining settings applied directly.
+paths:
+  train_data: data/extended
+  test_data: data/test
+  casestudy_data: data/casestudy
+  pretrained_models: models/improve_transformer
+  checkpoints: models/checkpoints
+  runs: runs/improve_transformer
+
+comparative_pretraining:
+  sample_counts: [100, 250, 500, 1000, 5000, 10000, 14000]
+  available_samples: 14595
+  models: [unet, segformer]
+  seed: 30
+  # Keep checkpoints where the downstream experiment path resolver expects
+  # them. The runner refuses accidental overwrite unless --overwrite is used.
+  output_dir: models/improve_transformer
+  run_dir: runs/improve_transformer/comparative_pretraining2
+
+simulation:
+  Lx: 0.1
+  Ly: 0.05
+  Nx: 255
+  Ny: 127
+  dt: 3.0e-08
+  N: 2000
+  gamma0: 1.0e-05
+  rho: 2700
+  c: 6000
+  numberOfSources: 4
+  distanceBetweenSources: 36
+  distanceBetweenSensors: 6
+
+source:
+  frequency: 500000
+  cycles: 2
+  amplitude: 1.0e+12
+
+data_generation:
+  seed: 2
+  train:
+    number_of_cases: 15000
+    number_of_damages: 1
+    factor_to_avoid_inverse_crime: 2
+  test:
+    number_of_cases: 2
+    number_of_damages: 1
+    factor_to_avoid_inverse_crime: 2
+
+models:
+  unet:
+    channels: [1, 16, 32, 64, 128]
+    number_of_convolutions_per_block: 2
+    batch_norm: true
+  segformer:
+    in_channels: 1
+    hidden_sizes: [24, 48, 96, 192]
+    depths: [2, 2, 2, 2]
+    num_attention_heads: [1, 2, 4, 8]
+    sr_ratios: [8, 4, 2, 1]
+    patch_sizes: [7, 3, 3, 3]
+    strides: [4, 2, 2, 2]
+    mlp_ratios: [4, 4, 4, 4]
+    decoder_hidden_size: 256
+    hidden_dropout_prob: 0.0
+    attention_probs_dropout_prob: 0.0
+    classifier_dropout_prob: 0.05
+    drop_path_rate: 0.02
+    decoder_norm: batch_no_running
+    decoder_norm_groups: 8
+
+pretraining:
+  seed: 30
+  split_seed: 2
+  numberOfSamples: 15000
+  availableSamples: 15000
+  trainingType: supervised
+  model_type: Unet
+  NNchannels: [1, 16, 32, 64, 128]
+  numberOfConvolutionsPerBlock: 2
+  batchDivisor: 10
+  batch_size: 16
+  validation_batch_size: 16
+  preload_to_device: false
+  print_every_batches: 100
+  lr: 5.0e-04
+  alpha: -0.5
+  beta: 0.2
+  epochs: 100
+  clipGrad: 5.0e-04
+  l2: 1.0e-06
+  costScaling: 1.0e+08
+
+segformer_pretraining:
+  seed: 30
+  split_seed: 2
+  numberOfSamples: 14000
+  availableSamples: 14595
+  trainingType: segmentation
+  model_type: SegFormer
+  batch_size: 16
+  lr: 1.5e-04
+  weight_decay: 1.0e-03
+  scheduler: warmup_cosine
+  warmup_epochs: 3
+  warmup_start_factor: 0.1
+  min_lr_ratio: 0.05
+  epochs: 100
+  clipGrad: 1.0
+  dice_weight: 1.0
+  bce_pos_weight: auto
+  void_gamma_threshold: 0.5
+  eval_threshold: 0.5
+  void_prior: 0.01
+  checkpoint_selection: dice_score
+  minimum_epochs: 30
+  early_stopping_patience: 15
+  print_every_batches: 100
+  gradient_normalization:
+    mode: robust_abs
+    quantile: 0.99
+    eps: 1.0e-08
+    clamp: 1.0
+
+experiments:
+  cases: [1, 2, 3, 4]
+  pretrain_samples: [14000]
+  # U-Net retains its existing 100-epoch recipe. SegFormer transfer uses its
+  # explicit 60-epoch checkpoint name below.
+  epochs_pretrain: 100
+  modelType: Unet
+  NNchannels: [1, 16, 32, 64, 128]
+  numberOfConvolutionsPerBlock: 2
+
+  conventional_fwi:
+    lr: 8.0e-02
+    alpha: 0.0
+    beta: 0.0
+    weightLrFactor: 1
+    clipGrad: 1.0e-05
+    epochs: 35
+    costScaling: 1.0e+12
+
+  conventional_fwi_initial_guess:
+    seed: 99
+    pretrain_samples: 15000
+    lr: 5.0e-02
+    alpha: 0.0
+    beta: 0.0
+    weightLrFactor: 1
+    clipGrad: 1.0e-05
+    epochs: 35
+    costScaling: 1.0e+12
+
+  nn_based_fwi:
+    seed: 50
+    input_shape: [1, 128, 8, 4]
+    trunc_normal_mean: 0.4
+    trunc_normal_std: 0.2
+    trunc_normal_a: 0.0
+    trunc_normal_b: 0.9
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    l2: 1.0e-06
+    costScaling: 1.0e+09
+
+  inr_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 1.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_siren_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_siren_centered_fwi:
+    seed: 50
+    hidden_features: 128
+    hidden_layers: 4
+    omega0: 30
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    clipGrad: 5.0e-05
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_lr_fwi:
+    seed: 50
+    rank: 32
+    hidden_features: 128
+    hidden_layers: 3
+    omega0: 30
+    core_init_std: 1.0e-03
+    output_mode: voidness
+    final_bias: -5.0
+    lr: 3.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_mpe_fwi:
+    seed: 50
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-03
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -5
+    lr: 1.0e-03
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_mpe_centered_fwi:
+    seed: 50
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    hidden_features: 64
+    hidden_layers: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    output_mode: voidness
+    final_bias: -4
+    lr: 3.0e-02
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_ig_fwi:
+    seed: 50
+    fusion_alpha: 0.8
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    grid_init_std: 1.0e-03
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -4.5
+    lr: 1.0e-2
+    alpha: -0.5
+    beta: 0.2
+    epochs: 35
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  inr_ig_centered_fwi:
+    seed: 50
+    fusion_alpha: 0.8
+    num_levels: 16
+    base_resolution: 50
+    per_level_scale: 1.05
+    features_per_level: 2
+    grid_init_std: 1.0e-02
+    align_corners: true
+    swap_grid_coords: false
+    siren_hidden_features: 128
+    siren_hidden_layers: 2
+    siren_out_features: 128
+    omega0: 30
+    fusion_hidden_features: 64
+    fusion_hidden_layers: 2
+    output_mode: voidness
+    final_bias: -4.5
+    lr: 1.0e-2
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    tv_weight: 0.0
+    tv_type: anisotropic
+    l2: 1.0e-06
+    costScaling: 1.0e+11
+
+  transfer_learning_fwi:
+    seed: 99
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
+  transfer_learning_fwi_frozen_encoder:
+    seed: 99
+    lr: 5.0e-04
+    alpha: -0.5
+    beta: 0.2
+    epochs: 5
+    clipGrad: 5.0e-05
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+
+  transfer_segformer_fwi:
+    seed: 99
+    pretrained_checkpoint: model_SegFormer_60_segmentation_14000.pt
+    trainable_mode: decoder_only
+    optimization_model_mode: eval
+    lr: 1.0e-04
+    weight_decay: 0.0
+    alpha: -0.5
+    beta: 0.2
+    epochs: 15
+    clipGrad: 0.5
+    l2: 1.0e-06
+    costScaling: 1.0e+10
+    record_post_step: true
+    restore_best_observed: true
+    early_stopping_patience: 8

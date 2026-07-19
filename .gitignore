@@ -21,5 +21,5 @@ temp/
 test_coordinate_wiring.py
 IMPLEMENTATION_LOG_INR_FIXES.md
 IMPLEMENTATION_LOG_SEGFORMER_TRANSFER_FWI.md
-
+segformer_improvements.md
 

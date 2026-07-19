@@ -1,0 +1,24 @@
+# Scale-up profile for the current 15,000-case extended dataset. This inherits
+# every model, optimizer, normalization, checkpoint, and transfer-FWI choice
+# from segformer_improved.yaml and changes only dataset-scale settings.
+base_config: segformer_improved.yaml
+
+overrides:
+  paths:
+    train_data: data/extended
+
+  segformer_pretraining:
+    numberOfSamples: 15000
+    availableSamples: 15000
+    batch_size: 16
+    # 12,000 training cases / batch 16 = 750 steps per epoch; 60 epochs gives
+    # 45,000 optimizer steps, already 4.5x the stable 1,000-case trial.
+    epochs: 60
+    minimum_epochs: 30
+    early_stopping_patience: 15
+    print_every_batches: 100
+
+  experiments:
+    pretrain_samples: [15000]
+    transfer_segformer_fwi:
+      pretrained_checkpoint: model_SegFormer_60_segmentation_15000.pt
