@@ -10,8 +10,8 @@ paths:
   runs: runs/improve_transformer
 
 comparative_pretraining:
-  sample_counts: [100, 250, 500, 1000, 5000, 10000, 14000]
-  available_samples: 14595
+  sample_counts: [100, 250, 500, 1000, 5000, 10000, 15000]
+  available_samples: 15000
   models: [unet, segformer]
   seed: 30
   # Keep checkpoints where the downstream experiment path resolver expects
@@ -96,8 +96,8 @@ pretraining:
 segformer_pretraining:
   seed: 30
   split_seed: 2
-  numberOfSamples: 14000
-  availableSamples: 14595
+  numberOfSamples: 15000
+  availableSamples: 15000
   trainingType: segmentation
   model_type: SegFormer
   batch_size: 16
@@ -126,7 +126,7 @@ segformer_pretraining:
 
 experiments:
   cases: [1, 2, 3, 4]
-  pretrain_samples: [14000]
+  pretrain_samples: [15000]
   # U-Net retains its existing 100-epoch recipe. SegFormer transfer uses its
   # explicit 60-epoch checkpoint name below.
   epochs_pretrain: 100
@@ -355,7 +355,7 @@ experiments:
 
   transfer_segformer_fwi:
     seed: 99
-    pretrained_checkpoint: model_SegFormer_60_segmentation_14000.pt
+    pretrained_checkpoint: model_SegFormer_60_segmentation_15000.pt
     trainable_mode: decoder_only
     optimization_model_mode: eval
     lr: 1.0e-04
