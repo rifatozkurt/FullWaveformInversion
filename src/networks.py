@@ -265,6 +265,208 @@ class GradientSegFormer(torch.nn.Module):
         return 1.0 - (1.0 - self.gamma_min) * p_void
 
 
+class GradientSegFormerHighResolution(torch.nn.Module):
+    """
+    SegFormer with a shallow full-resolution residual refinement branch.
+
+    The original SegFormer head predicts coarse logits at one-quarter input
+    resolution. This class keeps that architecture intact, upsamples its logits,
+    extracts local features directly from the full-resolution gradient, and
+    predicts a residual logit correction:
+
+        refined_logits = upsampled_segformer_logits + correction
+
+    Input:      [B, in_channels, H, W]
+    Coarse:     [B, 1, H/4, W/4]
+    Correction: [B, 1, H, W]
+    Logits:     [B, 1, H, W]
+    Gamma:      [B, 1, H, W]
+    """
+
+    def __init__(
+        self,
+        spec=None,
+        gamma_min=1.0e-5,
+        void_prior=0.01,
+        refiner_channels=8,
+    ):
+        super().__init__()
+        if isinstance(spec, dict):
+            self.spec = SegFormerSpec.from_dict(spec)
+            refiner_channels = spec.get("refiner_channels", refiner_channels)
+        else:
+            self.spec = spec or SegFormerSpec()
+        self.spec.validate()
+
+        self.void_prior = float(void_prior)
+        self.refiner_channels = int(refiner_channels)
+        if self.refiner_channels < 1:
+            raise ValueError(
+                f"refiner_channels must be positive, got {self.refiner_channels}"
+            )
+
+        try:
+            from transformers import SegformerConfig, SegformerForSemanticSegmentation
+        except ImportError as exc:
+            raise ImportError(
+                "GradientSegFormerHighResolution requires the 'transformers' "
+                "package. Install project dependencies or run: "
+                "pip install transformers"
+            ) from exc
+
+        config = SegformerConfig(
+            num_channels=int(self.spec.in_channels),
+            num_labels=1,
+            hidden_sizes=list(self.spec.hidden_sizes),
+            depths=list(self.spec.depths),
+            num_attention_heads=list(self.spec.num_attention_heads),
+            sr_ratios=list(self.spec.sr_ratios),
+            patch_sizes=list(self.spec.patch_sizes),
+            strides=list(self.spec.strides),
+            mlp_ratios=list(self.spec.mlp_ratios),
+            decoder_hidden_size=int(self.spec.decoder_hidden_size),
+            hidden_dropout_prob=float(self.spec.hidden_dropout_prob),
+            attention_probs_dropout_prob=float(
+                self.spec.attention_probs_dropout_prob
+            ),
+            classifier_dropout_prob=float(self.spec.classifier_dropout_prob),
+            drop_path_rate=float(self.spec.drop_path_rate),
+        )
+        self.segformer = SegformerForSemanticSegmentation(config)
+        if self.spec.decoder_norm == "batch_no_running":
+            self.segformer.decode_head.batch_norm = torch.nn.BatchNorm2d(
+                int(self.spec.decoder_hidden_size),
+                track_running_stats=False,
+            )
+        elif self.spec.decoder_norm == "group":
+            self.segformer.decode_head.batch_norm = torch.nn.GroupNorm(
+                num_groups=int(self.spec.decoder_norm_groups),
+                num_channels=int(self.spec.decoder_hidden_size),
+            )
+
+        channels = self.refiner_channels
+        self.high_resolution_input = torch.nn.Sequential(
+            torch.nn.Conv2d(
+                int(self.spec.in_channels),
+                channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            torch.nn.GELU(),
+            torch.nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            torch.nn.GELU(),
+        )
+        self.high_resolution_fusion = torch.nn.Sequential(
+            torch.nn.Conv2d(
+                channels + 1,
+                channels,
+                kernel_size=3,
+                padding=1,
+            ),
+            torch.nn.GELU(),
+        )
+        self.high_resolution_correction = torch.nn.Conv2d(
+            channels,
+            1,
+            kernel_size=3,
+            padding=1,
+        )
+
+        self.register_buffer(
+            "gamma_min",
+            torch.tensor(float(gamma_min), dtype=torch.float32),
+        )
+        self.reset_classifier_bias()
+        self.reset_refiner_correction()
+
+    def reset_classifier_bias(self):
+        if not (0.0 < self.void_prior < 1.0):
+            raise ValueError(
+                f"void_prior must be in (0, 1), got {self.void_prior}"
+            )
+        prior_logit = math.log(self.void_prior / (1.0 - self.void_prior))
+        classifier = getattr(self.segformer.decode_head, "classifier", None)
+        if classifier is None or classifier.bias is None:
+            raise RuntimeError("Could not find SegFormer decode-head classifier bias")
+        with torch.no_grad():
+            classifier.bias.fill_(prior_logit)
+
+    def reset_refiner_correction(self):
+        """Start as the unmodified SegFormer by predicting zero correction."""
+        torch.nn.init.zeros_(self.high_resolution_correction.weight)
+        if self.high_resolution_correction.bias is not None:
+            torch.nn.init.zeros_(self.high_resolution_correction.bias)
+
+    def architecture_dict(self):
+        architecture = self.spec.to_dict()
+        architecture.update(
+            {
+                "high_resolution_refiner": True,
+                "refiner_channels": self.refiner_channels,
+                "residual_logit_correction": True,
+            }
+        )
+        return architecture
+
+    def _validate_gradient_input(self, gradient_input):
+        if (
+            gradient_input.ndim != 4
+            or gradient_input.shape[1] != self.spec.in_channels
+        ):
+            raise ValueError(
+                "GradientSegFormerHighResolution expects input shape "
+                f"[B, {self.spec.in_channels}, H, W], "
+                f"got {tuple(gradient_input.shape)}"
+            )
+
+    def forward_coarse_logits(self, gradient_input):
+        """Return the original SegFormer decoder logits before final resizing."""
+        self._validate_gradient_input(gradient_input)
+        return self.segformer(pixel_values=gradient_input).logits
+
+    def forward_base_logits(self, gradient_input):
+        """Return the original SegFormer logits resized to the input grid."""
+        coarse_logits = self.forward_coarse_logits(gradient_input)
+        if coarse_logits.shape[-2:] == gradient_input.shape[-2:]:
+            return coarse_logits
+        return F.interpolate(
+            coarse_logits,
+            size=gradient_input.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    def forward_correction(self, gradient_input, base_logits=None):
+        """Predict a full-resolution residual correction to the base logits."""
+        self._validate_gradient_input(gradient_input)
+        if base_logits is None:
+            base_logits = self.forward_base_logits(gradient_input)
+        local_features = self.high_resolution_input(gradient_input)
+        combined = torch.cat((base_logits, local_features), dim=1)
+        fused_features = self.high_resolution_fusion(combined)
+        return self.high_resolution_correction(fused_features)
+
+    def forward_logits(self, gradient_input):
+        base_logits = self.forward_base_logits(gradient_input)
+        correction = self.forward_correction(
+            gradient_input,
+            base_logits=base_logits,
+        )
+        return base_logits + correction
+
+    def forward_voidness(self, gradient_input):
+        return torch.sigmoid(self.forward_logits(gradient_input))
+
+    def forward(self, gradient_input):
+        p_void = self.forward_voidness(gradient_input)
+        return 1.0 - (1.0 - self.gamma_min) * p_void
+
+
 # NN definition
 class Unet(torch.nn.Module):
     def __init__(self, channels, numberOfConvolutionsPerBlock, gamma0, bnorm=True):

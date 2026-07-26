@@ -70,6 +70,10 @@ models:
     drop_path_rate: 0.02
     decoder_norm: batch_no_running
     decoder_norm_groups: 8
+  # Optional model selected with --models segformer_highres. It inherits the
+  # SegFormer settings above and adds only the full-resolution residual branch.
+  segformer_highres:
+    refiner_channels: 8
 
 pretraining:
   seed: 30

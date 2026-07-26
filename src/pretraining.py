@@ -1,3 +1,4 @@
+import csv
 import random
 import time
 from pathlib import Path
@@ -12,7 +13,14 @@ from src import networks as NN
 from src.experiments.base import get_device, simulation_parameters
 
 
-def _save_pretraining_outputs(run_dir, training_loss, validation_loss):
+def _save_pretraining_outputs(
+    run_dir,
+    training_loss,
+    validation_loss,
+    validation_gamma_mse,
+    validation_dice,
+    validation_iou,
+):
     run_dir = Path(run_dir)
     histories_dir = io.ensure_dir(run_dir / "histories")
     figures_dir = io.ensure_dir(run_dir / "figures")
@@ -20,17 +28,43 @@ def _save_pretraining_outputs(run_dir, training_loss, validation_loss):
 
     training_path = histories_dir / "pretraining_training_loss_history.txt"
     validation_path = histories_dir / "pretraining_validation_loss_history.txt"
+    gamma_mse_path = histories_dir / "pretraining_validation_gamma_mse_history.txt"
+    dice_path = histories_dir / "pretraining_validation_dice_history.txt"
+    iou_path = histories_dir / "pretraining_validation_iou_history.txt"
     np.savetxt(training_path, training_loss, delimiter=", ")
     np.savetxt(validation_path, validation_loss, delimiter=", ")
+    np.savetxt(gamma_mse_path, validation_gamma_mse, delimiter=", ")
+    np.savetxt(dice_path, validation_dice, delimiter=", ")
+    np.savetxt(iou_path, validation_iou, delimiter=", ")
+
+    metrics_csv_path = histories_dir / "pretraining_validation_metrics.csv"
+    with metrics_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["epoch", "gamma_mse", "dice_score", "iou"],
+        )
+        writer.writeheader()
+        for epoch, (gamma_mse, dice, iou_value) in enumerate(
+            zip(validation_gamma_mse, validation_dice, validation_iou),
+            start=1,
+        ):
+            writer.writerow(
+                {
+                    "epoch": epoch,
+                    "gamma_mse": float(gamma_mse),
+                    "dice_score": float(dice),
+                    "iou": float(iou_value),
+                }
+            )
 
     plot_path = figures_dir / "pretraining_loss_history.png"
     fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
     epochs = np.arange(1, len(training_loss) + 1)
     ax.plot(epochs, training_loss, label="Training loss", color="#2f5aa8", linewidth=2)
     ax.plot(epochs, validation_loss, label="Validation loss", color="#b64040", linewidth=2)
-    ax.set_title("Pretraining loss history")
-    ax.set_xlabel("epoch")
-    ax.set_ylabel("loss")
+    ax.set_title("U-Net Pretraining Loss History")
+    ax.set_xlabel("Epochs")
+    ax.set_ylabel("Native Loss (0.5 × Padded Gamma MSE)")
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.savefig(plot_path, dpi=160)
@@ -40,10 +74,14 @@ def _save_pretraining_outputs(run_dir, training_loss, validation_loss):
         outputs_dir / "pretraining_loss_history.npz",
         training_loss=training_loss,
         validation_loss=validation_loss,
+        validation_gamma_mse=validation_gamma_mse,
+        validation_dice=validation_dice,
+        validation_iou=validation_iou,
     )
     return {
         "training_loss_path": training_path,
         "validation_loss_path": validation_path,
+        "validation_metrics_path": metrics_csv_path,
         "plot_path": plot_path,
     }
 
@@ -144,6 +182,17 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         np.savetxt(outputs_dir / "pretraining_sample_ids.txt", idx_numberOfSamples, fmt="%d")
         np.savetxt(outputs_dir / "pretraining_training_subset_indices.txt", datasetTraining.indices, fmt="%d")
         np.savetxt(outputs_dir / "pretraining_validation_subset_indices.txt", datasetValidation.indices, fmt="%d")
+        sample_ids = np.asarray(idx_numberOfSamples, dtype=np.int64)
+        np.savetxt(
+            outputs_dir / "pretraining_training_sample_ids.txt",
+            sample_ids[np.asarray(datasetTraining.indices, dtype=np.int64)],
+            fmt="%d",
+        )
+        np.savetxt(
+            outputs_dir / "pretraining_validation_sample_ids.txt",
+            sample_ids[np.asarray(datasetValidation.indices, dtype=np.int64)],
+            fmt="%d",
+        )
     print(
         "Pretraining setup: epochs={}, batch_size={}, training_batches={}, "
         "validation_batch_size={}, validation_samples={}, storage_device={}".format(
@@ -184,6 +233,9 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     trainingCostHistory = np.zeros(epochs)
     trainingMSEHistory = np.zeros(epochs)
     validationCostHistory = np.zeros(epochs)
+    validationGammaMSEHistory = np.zeros(epochs)
+    validationDiceHistory = np.zeros(epochs)
+    validationIoUHistory = np.zeros(epochs)
     print_every_batches = max(1, int(cfg.get("print_every_batches", 1)))
     start = time.perf_counter()
     # Legacy compatibility: Pretraining.py resets beta to zero after creating
@@ -229,23 +281,66 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
 
         model.eval()
         validation_cost_sum = 0.0
+        validation_gamma_mse_sum = 0.0
         validation_samples = 0
+        validation_tp = 0.0
+        validation_fp = 0.0
+        validation_fn = 0.0
         with torch.no_grad():
             for sample in dataloaderValidation:
                 sample[0] = sample[0].to(device)
                 sample[1] = sample[1].to(device)
+                gamma_interior_pred = model(sample[0])
+                gamma_interior_target = sample[1][:, :, 1:-1, 1:-1]
                 gammaPred = torch.ones(
                     (len(sample[0]), 1, Nx + 3, Ny + 3),
                     device=device,
                     dtype=torch.float32,
                 )
-                gammaPred[:, :, 1:-1, 1:-1] = model(sample[0])
+                gammaPred[:, :, 1:-1, 1:-1] = gamma_interior_pred
                 batch_validation_cost = 0.5 * torch.mean((gammaPred - sample[1]) ** 2)
+                batch_gamma_mse = torch.mean(
+                    (gamma_interior_pred - gamma_interior_target) ** 2
+                )
                 validation_cost_sum += (
                     float(batch_validation_cost.detach().cpu()) * len(sample[0])
                 )
+                validation_gamma_mse_sum += (
+                    float(batch_gamma_mse.detach().cpu()) * len(sample[0])
+                )
                 validation_samples += len(sample[0])
+
+                # Express both models as a binary void segmentation for common
+                # Dice/IoU reporting. Halfway between gamma0 and one corresponds
+                # to a void-probability threshold of 0.5.
+                predicted_void = (
+                    ((1.0 - gamma_interior_pred) / max(1.0 - gamma0, 1e-8))
+                    .clamp(0.0, 1.0)
+                    >= 0.5
+                )
+                target_void = gamma_interior_target <= ((1.0 + gamma0) / 2.0)
+                validation_tp += float(
+                    (predicted_void & target_void).sum().detach().cpu()
+                )
+                validation_fp += float(
+                    (predicted_void & ~target_void).sum().detach().cpu()
+                )
+                validation_fn += float(
+                    (~predicted_void & target_void).sum().detach().cpu()
+                )
         validationCostHistory[epoch] = validation_cost_sum / max(1, validation_samples)
+        validationGammaMSEHistory[epoch] = (
+            validation_gamma_mse_sum / max(1, validation_samples)
+        )
+        metric_eps = 1e-8
+        validationDiceHistory[epoch] = (
+            2.0 * validation_tp
+            / (2.0 * validation_tp + validation_fp + validation_fn + metric_eps)
+        )
+        validationIoUHistory[epoch] = (
+            validation_tp
+            / (validation_tp + validation_fp + validation_fn + metric_eps)
+        )
 
         if epoch % 10 == 0:
             elapsed_time = time.perf_counter() - start
@@ -271,6 +366,9 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
             run_dir,
             trainingCostHistory,
             validationCostHistory,
+            validationGammaMSEHistory,
+            validationDiceHistory,
+            validationIoUHistory,
         )
         print(f"Saved pretraining histories and plot under {Path(run_dir)}", flush=True)
         for key, value in output_paths.items():

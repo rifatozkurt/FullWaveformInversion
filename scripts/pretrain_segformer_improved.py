@@ -7,7 +7,10 @@ import _bootstrap
 import yaml
 
 from src import io
-from src.pretrain_segformer import pretrain_segformer
+from src.pretrain_segformer import (
+    parse_early_stopping_patience,
+    pretrain_segformer,
+)
 from src.segformer_improvements import load_improvement_profile
 
 
@@ -23,6 +26,12 @@ def main():
     parser.add_argument("--available-samples", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--minimum-epochs", type=int, default=None)
+    parser.add_argument(
+        "--early-stopping-patience",
+        default=None,
+        help="Positive epoch count, or 'none' to disable early stopping.",
+    )
     args = parser.parse_args()
 
     config, base_path = load_improvement_profile(args.profile)
@@ -35,6 +44,14 @@ def main():
         cfg["epochs"] = int(args.epochs)
     if args.batch_size is not None:
         cfg["batch_size"] = int(args.batch_size)
+    if args.minimum_epochs is not None:
+        if args.minimum_epochs < 1:
+            raise ValueError("--minimum-epochs must be positive")
+        cfg["minimum_epochs"] = int(args.minimum_epochs)
+    if args.early_stopping_patience is not None:
+        cfg["early_stopping_patience"] = parse_early_stopping_patience(
+            args.early_stopping_patience
+        )
 
     run_root = Path(args.run_root or config["paths"].get("runs", "runs"))
     run_dir = io.create_run_dir(run_root, prefix="pretraining_segformer_improved")

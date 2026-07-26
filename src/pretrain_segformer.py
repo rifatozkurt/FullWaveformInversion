@@ -70,9 +70,9 @@ def save_segformer_pretraining_outputs(run_dir, rows):
     fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
     ax.plot(epochs, train_loss, label="Training loss", color="#2f5aa8", linewidth=2)
     ax.plot(epochs, val_loss, label="Validation loss", color="#b64040", linewidth=2)
-    ax.set_title("SegFormer pretraining loss history")
-    ax.set_xlabel("epoch")
-    ax.set_ylabel("loss")
+    ax.set_title("SegFormer Pretraining Loss History")
+    ax.set_xlabel("Epochs")
+    ax.set_ylabel("Native Loss (Weighted BCE + Dice)")
     ax.grid(True, alpha=0.3)
     ax.legend()
     plot_path = figures_dir / "segformer_pretraining_loss_history.png"
@@ -82,9 +82,9 @@ def save_segformer_pretraining_outputs(run_dir, rows):
     fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
     ax.plot(epochs, train_loss, label="Training loss", color="#2f5aa8", linewidth=2)
     ax.plot(epochs, val_loss, label="Validation loss", color="#b64040", linewidth=2)
-    ax.set_title("SegFormer pretraining loss history (log scale)")
-    ax.set_xlabel("epoch")
-    ax.set_ylabel("loss")
+    ax.set_title("SegFormer Pretraining Loss History (Log Scale)")
+    ax.set_xlabel("Epochs")
+    ax.set_ylabel("Native Loss (Weighted BCE + Dice)")
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     ax.legend()
@@ -137,18 +137,91 @@ def checkpoint_path_for_metric(primary_path, metric):
     return primary_path.with_name(primary_path.stem + f"_best_{metric}" + primary_path.suffix)
 
 
+def parse_early_stopping_patience(value):
+    """Parse a positive patience value or an explicit early-stopping disable."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {
+        "none",
+        "off",
+        "disabled",
+    }:
+        return None
+    patience = int(value)
+    if patience < 1:
+        raise ValueError("Early-stopping patience must be positive or 'none'")
+    return patience
+
+
+def normalize_segformer_variant(value):
+    variant = str(value or "segformer").strip().lower().replace("-", "_")
+    aliases = {
+        "segformer": "segformer",
+        "standard": "segformer",
+        "segformer_highres": "segformer_highres",
+        "segformer_high_resolution": "segformer_highres",
+        "highres": "segformer_highres",
+    }
+    if variant not in aliases:
+        raise ValueError(
+            "SegFormer model variant must be segformer or segformer_highres, "
+            f"got {value!r}"
+        )
+    return aliases[variant]
+
+
+def segformer_model_type(training_config, model_variant):
+    variant = normalize_segformer_variant(model_variant)
+    if variant == "segformer_highres":
+        return str(
+            training_config.get(
+                "high_resolution_model_type",
+                "SegFormerHighResolution",
+            )
+        )
+    return str(training_config.get("model_type", "SegFormer"))
+
+
+def build_segformer_model(config, params, model_variant=None):
+    cfg = config["segformer_pretraining"]
+    variant = normalize_segformer_variant(
+        model_variant or cfg.get("model_variant", "segformer")
+    )
+    model_cfg = dict(config.get("models", {}).get("segformer", {}))
+
+    if variant == "segformer_highres":
+        model_cfg.update(
+            config.get("models", {}).get("segformer_highres", {})
+        )
+        model = NN.GradientSegFormerHighResolution(
+            spec=model_cfg,
+            gamma_min=params["gamma0"],
+            void_prior=float(cfg["void_prior"]),
+            refiner_channels=int(model_cfg.get("refiner_channels", 8)),
+        )
+    else:
+        model = NN.GradientSegFormer(
+            spec=model_cfg,
+            gamma_min=params["gamma0"],
+            void_prior=float(cfg["void_prior"]),
+        )
+    return model, variant
+
+
 def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device):
     model.eval()
     totals = {
         "val_loss": 0.0,
         "val_bce_loss": 0.0,
         "val_dice_loss": 0.0,
-        "dice_score": 0.0,
-        "iou": 0.0,
-        "precision": 0.0,
-        "recall": 0.0,
     }
-    batches = 0
+    samples = 0
+    squared_gamma_error = 0.0
+    gamma_elements = 0
+    true_positive = 0.0
+    false_positive = 0.0
+    false_negative = 0.0
+    gamma_min = float(model.gamma_min.detach().cpu())
     with torch.no_grad():
         for gradient, target in dataloader:
             gradient = gradient.to(device)
@@ -157,31 +230,94 @@ def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device)
             bce_loss = criterion(logits, target)
             dice_loss = dice_loss_from_logits(logits, target)
             loss = bce_loss + float(dice_weight) * dice_loss
-            metrics = segmentation_metrics(logits, target, threshold)
-            totals["val_loss"] += float(loss.detach().cpu())
-            totals["val_bce_loss"] += float(bce_loss.detach().cpu())
-            totals["val_dice_loss"] += float(dice_loss.detach().cpu())
-            for key, value in metrics.items():
-                totals[key] += value
-            batches += 1
-    return {key: value / max(batches, 1) for key, value in totals.items()}
+            batch_size = len(target)
+            totals["val_loss"] += float(loss.detach().cpu()) * batch_size
+            totals["val_bce_loss"] += float(bce_loss.detach().cpu()) * batch_size
+            totals["val_dice_loss"] += float(dice_loss.detach().cpu()) * batch_size
+            samples += batch_size
+
+            void_probability = torch.sigmoid(logits)
+            gamma_pred = 1.0 - (1.0 - gamma_min) * void_probability
+            gamma_target = 1.0 - (1.0 - gamma_min) * target
+            squared_gamma_error += float(
+                ((gamma_pred - gamma_target) ** 2).sum().detach().cpu()
+            )
+            gamma_elements += gamma_target.numel()
+
+            predicted_void = void_probability >= threshold
+            target_void = target >= 0.5
+            true_positive += float(
+                (predicted_void & target_void).sum().detach().cpu()
+            )
+            false_positive += float(
+                (predicted_void & ~target_void).sum().detach().cpu()
+            )
+            false_negative += float(
+                (~predicted_void & target_void).sum().detach().cpu()
+            )
+
+    result = {
+        key: value / max(samples, 1)
+        for key, value in totals.items()
+    }
+    eps = 1e-8
+    result.update(
+        {
+            "gamma_mse": squared_gamma_error / max(gamma_elements, 1),
+            "dice_score": (
+                2.0 * true_positive
+                / (2.0 * true_positive + false_positive + false_negative + eps)
+            ),
+            "iou": (
+                true_positive
+                / (true_positive + false_positive + false_negative + eps)
+            ),
+            "precision": true_positive / (true_positive + false_positive + eps),
+            "recall": true_positive / (true_positive + false_negative + eps),
+        }
+    )
+    return result
 
 
 def load_segformer_checkpoint(path, device):
     checkpoint = torch.load(Path(path), map_location=device)
-    model = NN.GradientSegFormer(
-        spec=checkpoint["architecture"],
-        gamma_min=checkpoint["gamma_min"],
-        void_prior=checkpoint["void_prior"],
-    ).to(device)
+    architecture = checkpoint["architecture"]
+    model_variant = checkpoint.get("model_variant")
+    if model_variant is None:
+        model_variant = (
+            "segformer_highres"
+            if architecture.get("high_resolution_refiner", False)
+            else "segformer"
+        )
+    model_variant = normalize_segformer_variant(model_variant)
+    if model_variant == "segformer_highres":
+        model = NN.GradientSegFormerHighResolution(
+            spec=architecture,
+            gamma_min=checkpoint["gamma_min"],
+            void_prior=checkpoint["void_prior"],
+            refiner_channels=int(architecture.get("refiner_channels", 8)),
+        )
+    else:
+        model = NN.GradientSegFormer(
+            spec=architecture,
+            gamma_min=checkpoint["gamma_min"],
+            void_prior=checkpoint["void_prior"],
+        )
+    model = model.to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint
 
 
-def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback=None, run_dir=None):
+def pretrain_segformer(
+    config,
+    data_dir=None,
+    output_dir=None,
+    progress_callback=None,
+    run_dir=None,
+    model_variant=None,
+):
     params = simulation_parameters(config)
     cfg = config["segformer_pretraining"]
-    model_cfg = config.get("models", {}).get("segformer", {})
     device = get_device()
 
     torch.manual_seed(int(cfg["seed"]))
@@ -221,7 +357,18 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         generator=torch.Generator().manual_seed(int(cfg["split_seed"])),
     )
     batch_size = int(cfg["batch_size"])
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    dataloader_seed = cfg.get("dataloader_seed")
+    train_loader_generator = None
+    if dataloader_seed is not None:
+        train_loader_generator = torch.Generator().manual_seed(
+            int(dataloader_seed)
+        )
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=train_loader_generator,
+    )
     val_loader = DataLoader(val_set, batch_size=max(1, min(len(val_set), batch_size)))
 
     if run_dir is not None:
@@ -229,12 +376,33 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
         np.savetxt(outputs_dir / "segformer_pretraining_sample_ids.txt", sample_ids, fmt="%d")
         np.savetxt(outputs_dir / "segformer_pretraining_training_subset_indices.txt", train_set.indices, fmt="%d")
         np.savetxt(outputs_dir / "segformer_pretraining_validation_subset_indices.txt", val_set.indices, fmt="%d")
+        sample_ids_array = np.asarray(sample_ids, dtype=np.int64)
+        np.savetxt(
+            outputs_dir / "segformer_pretraining_training_sample_ids.txt",
+            sample_ids_array[np.asarray(train_set.indices, dtype=np.int64)],
+            fmt="%d",
+        )
+        np.savetxt(
+            outputs_dir / "segformer_pretraining_validation_sample_ids.txt",
+            sample_ids_array[np.asarray(val_set.indices, dtype=np.int64)],
+            fmt="%d",
+        )
 
-    model = NN.GradientSegFormer(
-        spec=model_cfg,
-        gamma_min=params["gamma0"],
-        void_prior=float(cfg["void_prior"]),
-    ).to(device)
+    model, model_variant = build_segformer_model(
+        config,
+        params,
+        model_variant=model_variant,
+    )
+    model = model.to(device)
+    model_type = segformer_model_type(cfg, model_variant)
+    print(
+        "SegFormer model: variant={}, model_type={}, parameters={}".format(
+            model_variant,
+            model_type,
+            sum(parameter.numel() for parameter in model.parameters()),
+        ),
+        flush=True,
+    )
 
     pos_weight_cfg = cfg.get("bce_pos_weight", "auto")
     if pos_weight_cfg == "auto":
@@ -263,7 +431,7 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
     rows = []
     primary_path = Path(output_dir) / (
         "model_"
-        + cfg.get("model_type", "SegFormer")
+        + model_type
         + "_"
         + str(epochs)
         + "_"
@@ -361,11 +529,16 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
             checkpoint = {
                 "model_state_dict": model.state_dict(),
                 "architecture": model.architecture_dict(),
+                "model_variant": model_variant,
                 "gamma_min": float(params["gamma0"]),
                 "void_prior": float(cfg["void_prior"]),
                 "gradient_normalization": norm_cfg,
                 "void_gamma_threshold": float(cfg["void_gamma_threshold"]),
-                "training_config": dict(cfg),
+                "training_config": {
+                    **dict(cfg),
+                    "model_variant": model_variant,
+                    "model_type": model_type,
+                },
                 "epoch": epoch + 1,
                 "validation_metrics": val_metrics,
                 "checkpoint_metric": metric,
@@ -423,9 +596,34 @@ def pretrain_segformer(config, data_dir=None, output_dir=None, progress_callback
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--minimum-epochs", type=int, default=None)
+    parser.add_argument(
+        "--early-stopping-patience",
+        default=None,
+        help="Positive epoch count, or 'none' to disable early stopping.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    cfg = config["segformer_pretraining"]
+    if args.epochs is not None:
+        if args.epochs < 1:
+            raise ValueError("--epochs must be positive")
+        cfg["epochs"] = args.epochs
+    if args.batch_size is not None:
+        if args.batch_size < 1:
+            raise ValueError("--batch-size must be positive")
+        cfg["batch_size"] = args.batch_size
+    if args.minimum_epochs is not None:
+        if args.minimum_epochs < 1:
+            raise ValueError("--minimum-epochs must be positive")
+        cfg["minimum_epochs"] = args.minimum_epochs
+    if args.early_stopping_patience is not None:
+        cfg["early_stopping_patience"] = parse_early_stopping_patience(
+            args.early_stopping_patience
+        )
     run_dir = io.create_run_dir(
         io.ensure_dir(config["paths"].get("runs", "runs")) / "pretraining_segformer",
         prefix="pretraining_segformer",

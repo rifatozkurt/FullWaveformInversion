@@ -4,8 +4,12 @@ import _bootstrap
 import torch
 
 from src.experiments.transfer_segformer_fwi import set_segformer_trainable_mode
-from src.networks import GradientSegFormer
-from src.pretrain_segformer import build_pretraining_scheduler
+from src.networks import GradientSegFormer, GradientSegFormerHighResolution
+from src.pretrain_segformer import (
+    build_pretraining_scheduler,
+    build_segformer_model,
+    segformer_model_type,
+)
 from src.segformer_improvements import load_improvement_profile
 
 
@@ -47,6 +51,44 @@ def main():
     assert output.shape == (1, 1, 256, 128)
     assert torch.isfinite(output).all()
 
+    high_resolution_model, variant = build_segformer_model(
+        config,
+        {"gamma0": config["simulation"]["gamma0"]},
+        model_variant="segformer_highres",
+    )
+    assert variant == "segformer_highres"
+    assert isinstance(
+        high_resolution_model,
+        GradientSegFormerHighResolution,
+    )
+    assert (
+        segformer_model_type(
+            config["segformer_pretraining"],
+            variant,
+        )
+        == "SegFormerHighResolution"
+    )
+    high_resolution_total = sum(
+        parameter.numel()
+        for parameter in high_resolution_model.parameters()
+    )
+    assert high_resolution_total - total == 1393
+    high_resolution_model.eval()
+    with torch.no_grad():
+        gradient = torch.zeros(1, 1, 256, 128)
+        coarse_logits = high_resolution_model.forward_coarse_logits(gradient)
+        base_logits = high_resolution_model.forward_base_logits(gradient)
+        correction = high_resolution_model.forward_correction(
+            gradient,
+            base_logits=base_logits,
+        )
+        refined_logits = high_resolution_model.forward_logits(gradient)
+    assert coarse_logits.shape == (1, 1, 64, 32)
+    assert base_logits.shape == correction.shape == refined_logits.shape
+    assert refined_logits.shape == (1, 1, 256, 128)
+    assert torch.count_nonzero(correction) == 0
+    assert torch.equal(base_logits, refined_logits)
+
     parameter = torch.nn.Parameter(torch.tensor(1.0))
     optimizer = torch.optim.AdamW([parameter], lr=1e-4)
     scheduler, per_step = build_pretraining_scheduler(
@@ -65,8 +107,10 @@ def main():
     assert scaled_config["models"]["segformer"]["decoder_hidden_size"] == 256
 
     print(
-        "SegFormer improvement checks passed: total={}, decoder={}, decoder_plus_last={}".format(
+        "SegFormer improvement checks passed: total={}, high_resolution={}, "
+        "decoder={}, decoder_plus_last={}".format(
             total,
+            high_resolution_total,
             decoder,
             selected_last,
         )
