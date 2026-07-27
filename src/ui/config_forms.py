@@ -7,6 +7,9 @@ from src.config import load_config
 from src.io import ensure_dir
 
 
+PRETRAIN_MODEL_VARIANTS = ("unet", "segformer", "segformer_highres")
+
+
 SHARED_FIELD_MAP = {
     "Lx": ("simulation", "Lx", float),
     "Ly": ("simulation", "Ly", float),
@@ -166,6 +169,68 @@ def parse_channels(text):
     return [int(item.strip()) for item in str(text).split(",") if item.strip()]
 
 
+def normalize_pretrain_model_variant(value):
+    normalized = str(value or "unet").strip().lower().replace("-", "_")
+    aliases = {
+        "unet": "unet",
+        "u_net": "unet",
+        "segformer": "segformer",
+        "segformer_highres": "segformer_highres",
+        "segformer_high_resolution": "segformer_highres",
+        "highres": "segformer_highres",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "Pretraining model must be unet, segformer, or "
+            f"segformer_highres; got {value!r}"
+        )
+    return aliases[normalized]
+
+
+def pretraining_form_values(
+    config_path="configs/default.yaml",
+    model_variant="unet",
+):
+    config = load_config(config_path)
+    variant = normalize_pretrain_model_variant(model_variant)
+    unet_cfg = config.get("models", {}).get("unet", {})
+    unet_pre = config["pretraining"]
+    if variant == "unet":
+        selected = unet_pre
+        legacy_batch_size = max(
+            1,
+            int(selected["numberOfSamples"])
+            // max(1, int(selected["batchDivisor"])),
+        )
+        batch_size = int(selected.get("batch_size", legacy_batch_size))
+    else:
+        selected = config["segformer_pretraining"]
+        batch_size = int(selected["batch_size"])
+
+    return {
+        "number_of_samples": int(selected["numberOfSamples"]),
+        "epochs": int(selected["epochs"]),
+        "batch_size": batch_size,
+        "learning_rate": float(selected["lr"]),
+        "clip_grad": float(selected["clipGrad"]),
+        "l2": float(unet_pre.get("l2", 0.0)),
+        "alpha": float(unet_pre.get("alpha", 0.0)),
+        "beta": float(unet_pre.get("beta", 0.0)),
+        "channels": ",".join(
+            str(item)
+            for item in unet_cfg.get("channels", unet_pre["NNchannels"])
+        ),
+        "number_of_convolutions_per_block": int(
+            unet_cfg.get(
+                "number_of_convolutions_per_block",
+                unet_pre["numberOfConvolutionsPerBlock"],
+            )
+        ),
+        "batch_norm": bool(unet_cfg.get("batch_norm", True)),
+        "show_unet_options": variant == "unet",
+    }
+
+
 def save_pretrain_config(
     base_config_path,
     data_dir,
@@ -184,28 +249,121 @@ def save_pretrain_config(
     batch_norm,
 ):
     config = load_config(base_config_path)
+    model_variant = normalize_pretrain_model_variant(model_name)
     channels = parse_channels(channels)
     config["paths"]["train_data"] = str(data_dir)
     config["paths"]["pretrained_models"] = str(output_dir)
-    config["pretraining"]["numberOfSamples"] = int(number_of_samples)
-    config["pretraining"]["availableSamples"] = int(number_of_samples)
-    config["pretraining"]["epochs"] = int(epochs)
-    config["pretraining"]["batchDivisor"] = max(1, int(number_of_samples) // max(1, int(batch_size)))
-    config["pretraining"]["lr"] = float(learning_rate)
-    config["pretraining"]["clipGrad"] = float(clip_grad)
-    config["pretraining"]["l2"] = float(l2)
-    config["pretraining"]["alpha"] = float(alpha)
-    config["pretraining"]["beta"] = float(beta)
-    config["pretraining"]["model_type"] = model_name or config["pretraining"].get("model_type", "Unet")
-    config["pretraining"]["NNchannels"] = channels
-    config["pretraining"]["numberOfConvolutionsPerBlock"] = int(number_of_convolutions_per_block)
-    config.setdefault("models", {}).setdefault("unet", {})
-    config["models"]["unet"]["channels"] = channels
-    config["models"]["unet"]["number_of_convolutions_per_block"] = int(number_of_convolutions_per_block)
-    config["models"]["unet"]["batch_norm"] = bool(batch_norm)
+    if model_variant == "unet":
+        selected = config["pretraining"]
+        selected["numberOfSamples"] = int(number_of_samples)
+        selected["availableSamples"] = int(number_of_samples)
+        selected["epochs"] = int(epochs)
+        selected["batch_size"] = int(batch_size)
+        selected["batchDivisor"] = max(
+            1,
+            int(number_of_samples) // max(1, int(batch_size)),
+        )
+        selected["lr"] = float(learning_rate)
+        selected["clipGrad"] = float(clip_grad)
+        selected["l2"] = float(l2)
+        selected["alpha"] = float(alpha)
+        selected["beta"] = float(beta)
+        selected["model_type"] = "Unet"
+        selected["NNchannels"] = channels
+        selected["numberOfConvolutionsPerBlock"] = int(
+            number_of_convolutions_per_block
+        )
+        selected.pop("sample_ids", None)
+        config.setdefault("models", {}).setdefault("unet", {})
+        config["models"]["unet"]["channels"] = channels
+        config["models"]["unet"][
+            "number_of_convolutions_per_block"
+        ] = int(number_of_convolutions_per_block)
+        config["models"]["unet"]["batch_norm"] = bool(batch_norm)
+    else:
+        selected = config["segformer_pretraining"]
+        selected["numberOfSamples"] = int(number_of_samples)
+        selected["availableSamples"] = int(number_of_samples)
+        selected["epochs"] = int(epochs)
+        selected["batch_size"] = int(batch_size)
+        selected["lr"] = float(learning_rate)
+        selected["clipGrad"] = float(clip_grad)
+        selected["model_variant"] = model_variant
+        selected.pop("sample_ids", None)
+        config.setdefault("models", {}).setdefault("segformer_highres", {})
+        config["models"]["segformer_highres"].setdefault(
+            "refiner_channels",
+            8,
+        )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = Path("configs/custom") / f"pretrain_{stamp}.yaml"
+    path = Path("configs/custom") / f"pretrain_{model_variant}_{stamp}.yaml"
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False)
+    return path
+
+
+def save_transfer_variant_config(
+    base_config_path,
+    model_variant,
+    checkpoint_override=None,
+):
+    """Create a SegFormer transfer config for the selected checkpoint family."""
+    config = load_config(base_config_path)
+    variant = normalize_pretrain_model_variant(model_variant)
+    if variant == "unet":
+        raise ValueError("SegFormer transfer config cannot use the U-Net variant")
+
+    pre_cfg = config["segformer_pretraining"]
+    transfer_cfg = config["experiments"]["transfer_segformer_fwi"]
+    standard_type = str(pre_cfg.get("model_type", "SegFormer"))
+    highres_type = str(
+        pre_cfg.get("high_resolution_model_type", "SegFormerHighResolution")
+    )
+    desired_type = (
+        highres_type if variant == "segformer_highres" else standard_type
+    )
+
+    override = str(checkpoint_override or "").strip()
+    if override:
+        checkpoint_value = override
+    else:
+        checkpoint = Path(transfer_cfg["pretrained_checkpoint"])
+        known_prefixes = (
+            f"model_{standard_type}_",
+            f"model_{highres_type}_",
+        )
+        replaced = False
+        for prefix in known_prefixes:
+            if checkpoint.name.startswith(prefix):
+                checkpoint = checkpoint.with_name(
+                    f"model_{desired_type}_"
+                    + checkpoint.name[len(prefix) :]
+                )
+                replaced = True
+                break
+        if not replaced:
+            samples = int(
+                config["experiments"].get(
+                    "pretrain_samples",
+                    [pre_cfg["numberOfSamples"]],
+                )[0]
+            )
+            checkpoint = Path(
+                f"model_{desired_type}_{int(pre_cfg['epochs'])}_"
+                f"{pre_cfg.get('trainingType', 'segmentation')}_{samples}.pt"
+            )
+        checkpoint_value = str(checkpoint)
+
+    transfer_cfg["pretrained_checkpoint"] = checkpoint_value
+    transfer_cfg["model_variant"] = variant
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = (
+        Path("configs/custom")
+        / f"transfer_{variant}_{stamp}.yaml"
+    )
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)

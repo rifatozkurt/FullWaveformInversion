@@ -16,9 +16,47 @@ from src.experiments.base import plot_cost_mse_history
 from src.registry import EXPERIMENTS
 from src.ui import case_viewer
 from src.pretraining import pretrain_unet
+from src.pretrain_segformer import pretrain_segformer
 from src.ui import canvas
-from src.ui.config_forms import save_custom_config, save_pretrain_config
+from src.ui.config_forms import (
+    normalize_pretrain_model_variant,
+    save_custom_config,
+    save_pretrain_config,
+    save_transfer_variant_config,
+)
 from src.ui.formatting import format_run_status
+
+
+UI_EXPERIMENT_ALIASES = {
+    "transfer_segformer_highres_fwi": (
+        "transfer_segformer_fwi",
+        "segformer_highres",
+    ),
+}
+UI_METHOD_LABELS = {
+    "transfer_learning_fwi": "Transfer FWI - U-Net",
+    "transfer_segformer_fwi": "Transfer FWI - SegFormer",
+    "transfer_segformer_highres_fwi": "Transfer FWI - SegFormer HighRes",
+}
+
+
+def resolve_ui_experiment(method_name):
+    if method_name in UI_EXPERIMENT_ALIASES:
+        return UI_EXPERIMENT_ALIASES[method_name]
+    if method_name == "transfer_segformer_fwi":
+        return method_name, "segformer"
+    return method_name, None
+
+
+def ui_method_label(method_name):
+    return UI_METHOD_LABELS.get(method_name, method_name)
+
+
+def ui_method_choices():
+    methods = list(EXPERIMENTS.keys())
+    transfer_index = methods.index("transfer_segformer_fwi") + 1
+    methods.insert(transfer_index, "transfer_segformer_highres_fwi")
+    return [(ui_method_label(method), method) for method in methods]
 
 
 def refresh_cases():
@@ -171,16 +209,20 @@ def run_experiments_from_ui(
     fusion_hidden_features,
     fusion_hidden_layers,
     pretrained_model_path,
+    segformer_checkpoint_override,
     progress=None,
 ):
     if not selected_cases:
         yield "Select at least one case.", "", "", [], ""
         return
 
+    experiment_method, segformer_variant = resolve_ui_experiment(method_name)
+    display_method = ui_method_label(method_name)
+
     if config_mode == "Create custom YAML from UI parameters":
         yaml_path = save_custom_config(
             "configs/default.yaml",
-            method_name,
+            experiment_method,
             custom_config_name,
             {
                 "Lx": Lx,
@@ -231,13 +273,20 @@ def run_experiments_from_ui(
             },
         )
 
+    if segformer_variant is not None:
+        yaml_path = save_transfer_variant_config(
+            yaml_path,
+            segformer_variant,
+            checkpoint_override=segformer_checkpoint_override,
+        )
+
     cases = case_viewer.labels_to_cases(selected_cases)
     results = []
     gallery = []
     total_start = time.perf_counter()
     console = text_io.StringIO()
     yield (
-        f"Starting {method_name} for {len(cases)} case(s)...",
+        f"Starting {display_method} for {len(cases)} case(s)...",
         "0.00 s",
         "",
         [],
@@ -246,7 +295,10 @@ def run_experiments_from_ui(
 
     for index, case in enumerate(cases):
         if progress is not None:
-            progress((index, len(cases)), desc=f"{method_name} case {case['case_id']}")
+            progress(
+                (index, len(cases)),
+                desc=f"{display_method} case {case['case_id']}",
+            )
 
         output_queue = queue.Queue()
         worker_result = {}
@@ -257,7 +309,7 @@ def run_experiments_from_ui(
                 with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                     worker_result["result"] = _run_method(
                         yaml_path,
-                        method_name,
+                        experiment_method,
                         case["case_id"],
                         case["data_dir"],
                     )
@@ -272,7 +324,10 @@ def run_experiments_from_ui(
         while thread.is_alive():
             last_status_line = _drain_output(output_queue, console, last_status_line)
             status_line = "Running {} case {} ({}/{}).".format(
-                method_name, case["case_id"], index + 1, len(cases)
+                display_method,
+                case["case_id"],
+                index + 1,
+                len(cases),
             )
             if last_status_line:
                 status_line += "\n" + last_status_line
@@ -297,18 +352,45 @@ def run_experiments_from_ui(
         results.append(result)
 
         run_dir = Path(result["run_dir"])
-        final_path = run_dir / "outputs" / f"{method_name}_case{case['case_id']}_final_gamma.h5"
+        final_path = (
+            run_dir
+            / "outputs"
+            / f"{experiment_method}_case{case['case_id']}_final_gamma.h5"
+        )
         final_image = _gamma_image(final_path)
         if final_image is not None:
-            gallery.append((final_image, f"{method_name} case {case['case_id']} final gamma"))
+            gallery.append(
+                (
+                    final_image,
+                    f"{display_method} case {case['case_id']} final gamma",
+                )
+            )
 
-        history_path = _history_figure_path(run_dir, method_name, case["case_id"])
+        history_path = _history_figure_path(
+            run_dir,
+            experiment_method,
+            case["case_id"],
+        )
         if history_path is not None:
-            gallery.append((str(history_path), f"{method_name} case {case['case_id']} history"))
+            gallery.append(
+                (
+                    str(history_path),
+                    f"{display_method} case {case['case_id']} history",
+                )
+            )
 
-        cost_mse_path = _cost_mse_plot(run_dir, method_name, case["case_id"])
+        cost_mse_path = _cost_mse_plot(
+            run_dir,
+            experiment_method,
+            case["case_id"],
+        )
         if cost_mse_path is not None:
-            gallery.append((str(cost_mse_path), f"{method_name} case {case['case_id']} cost/MSE"))
+            gallery.append(
+                (
+                    str(cost_mse_path),
+                    f"{display_method} case {case['case_id']} cost/MSE",
+                )
+            )
 
     elapsed = time.perf_counter() - total_start
     status = format_run_status(results)
@@ -418,6 +500,7 @@ def start_pretraining_from_ui(
 ):
     start = time.perf_counter()
     try:
+        model_variant = normalize_pretrain_model_variant(model_name)
         generated_config = save_pretrain_config(
             config_path,
             data_dir,
@@ -437,8 +520,9 @@ def start_pretraining_from_ui(
         )
         config = load_config(generated_config)
         run_dir = io.create_run_dir(
-            Path(config["paths"].get("runs", "runs")) / "pretraining",
-            prefix="pretraining",
+            Path(config["paths"].get("runs", "runs"))
+            / f"pretraining_{model_variant}",
+            prefix=f"pretraining_{model_variant}",
         )
         io.ensure_dirs([run_dir / "figures", run_dir / "histories", run_dir / "outputs"])
         shutil.copy2(generated_config, run_dir / "config.yaml")
@@ -470,25 +554,40 @@ def start_pretraining_from_ui(
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 print(f"Generated config: {generated_config}", flush=True)
                 print(f"Run directory: {run_dir}", flush=True)
-                worker_result["model_path"] = pretrain_unet(
-                    config,
-                    data_dir=data_dir,
-                    output_dir=output_dir,
-                    progress_callback=progress_callback,
-                    run_dir=run_dir,
-                )
+                if model_variant == "unet":
+                    worker_result["model_path"] = pretrain_unet(
+                        config,
+                        data_dir=data_dir,
+                        output_dir=output_dir,
+                        progress_callback=progress_callback,
+                        run_dir=run_dir,
+                    )
+                else:
+                    worker_result["model_path"] = pretrain_segformer(
+                        config,
+                        data_dir=data_dir,
+                        output_dir=output_dir,
+                        progress_callback=progress_callback,
+                        run_dir=run_dir,
+                        model_variant=model_variant,
+                    )
         except Exception:
             output_queue.put(traceback.format_exc())
             worker_result["error"] = True
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
-    last_status_line = "Pretraining started..."
+    model_label = {
+        "unet": "U-Net",
+        "segformer": "SegFormer",
+        "segformer_highres": "SegFormer HighRes",
+    }[model_variant]
+    last_status_line = f"{model_label} pretraining started..."
     yield last_status_line, "", "0.00 s", None
 
     while thread.is_alive():
         last_status_line = _drain_output(output_queue, console, last_status_line)
-        status = "Pretraining running."
+        status = f"{model_label} pretraining running."
         if last_status_line:
             status += "\n" + last_status_line
         status += "\n\nRecent output:\n" + "\n".join(console.getvalue().splitlines()[-12:])
@@ -510,9 +609,14 @@ def start_pretraining_from_ui(
         ),
         encoding="utf-8",
     )
-    plot_path = run_dir / "figures" / "pretraining_loss_history.png"
+    plot_filename = (
+        "pretraining_loss_history.png"
+        if model_variant == "unet"
+        else "segformer_pretraining_loss_history.png"
+    )
+    plot_path = run_dir / "figures" / plot_filename
     status = (
-        "Pretraining finished.\n"
+        f"{model_label} pretraining finished.\n"
         f"Model: {model_path}\n"
         f"Run directory: {run_dir}\n"
         f"Config: {run_dir / 'config.yaml'}\n"

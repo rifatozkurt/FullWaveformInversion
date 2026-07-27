@@ -36,6 +36,18 @@ def set_segformer_trainable_mode(model, mode):
         parameter.requires_grad = False
 
     selected_modules = [model.segformer.decode_head]
+    # The HighRes refinement path is part of the output decoder. Include it in
+    # decoder-only transfer so the defining residual correction is not frozen.
+    high_resolution_module_names = (
+        "high_resolution_input",
+        "high_resolution_fusion",
+        "high_resolution_correction",
+    )
+    selected_modules.extend(
+        getattr(model, name)
+        for name in high_resolution_module_names
+        if hasattr(model, name)
+    )
     if mode == "decoder_plus_last_stage":
         backbone = model.segformer.segformer
         if hasattr(backbone, "stages"):

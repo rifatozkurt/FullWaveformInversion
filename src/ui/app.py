@@ -5,27 +5,35 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.registry import EXPERIMENTS
 from src.ui import callbacks
 from src.ui.case_viewer import case_choices, view_case
-from src.ui.config_forms import default_form_values, experiment_form_values
-from src.config import load_config
+from src.ui.config_forms import (
+    default_form_values,
+    experiment_form_values,
+    pretraining_form_values,
+)
 
 
 def build_app():
-    methods = list(EXPERIMENTS.keys())
+    method_choices = callbacks.ui_method_choices()
+    methods = [value for _, value in method_choices]
     cases = case_choices()
     defaults = default_form_values(method_name=methods[0])
-    config_defaults = load_config("configs/default.yaml")
-    pre_cfg = config_defaults["pretraining"]
-    unet_cfg = config_defaults.get("models", {}).get("unet", {})
+    pretrain_defaults = pretraining_form_values(
+        "configs/default.yaml",
+        "unet",
+    )
 
     with gr.Blocks(title="FWI Experiments, Data Generation and Pretraining UI") as app:
         gr.Markdown("# FWI Experiments, Data Generation and Pretraining UI")
 
         with gr.Tab("Run Experiments"):
             with gr.Row():
-                method = gr.Dropdown(methods, value=methods[0], label="Method")
+                method = gr.Dropdown(
+                    method_choices,
+                    value=methods[0],
+                    label="Method",
+                )
                 selected_cases = gr.Dropdown(cases, multiselect=True, label="Cases (Materials)")
                 refresh = gr.Button("Refresh Cases")
 
@@ -106,6 +114,17 @@ def build_app():
                     fusion_hidden_layers = gr.Number(defaults["fusion_hidden_layers"], label="fusion_hidden_layers", precision=0)
                 pretrained_model_path = gr.Textbox(defaults["pretrained_model_path"], label="Pretrained Model Directory")
 
+            segformer_checkpoint_override = gr.Textbox(
+                "",
+                label="SegFormer Checkpoint Override (optional)",
+                info=(
+                    "Leave blank to use the checkpoint configured in the YAML. "
+                    "HighRes automatically switches to the matching HighRes "
+                    "checkpoint filename."
+                ),
+                visible=False,
+            )
+
             run = gr.Button("Run Selected Cases", variant="primary")
             status = gr.Textbox(label="Status", lines=8)
             elapsed = gr.Textbox(label="Total Elapsed Time")
@@ -118,7 +137,12 @@ def build_app():
                 return gr.update(visible=state["yaml_visible"]), gr.update(visible=state["custom_visible"])
 
             def method_change(method_name):
-                values = experiment_form_values(method_name=method_name)
+                experiment_method, segformer_variant = (
+                    callbacks.resolve_ui_experiment(method_name)
+                )
+                values = experiment_form_values(
+                    method_name=experiment_method,
+                )
                 return (
                     values["epochs"],
                     values["learning_rate"],
@@ -148,6 +172,7 @@ def build_app():
                     values["fusion_hidden_features"],
                     values["fusion_hidden_layers"],
                     values["pretrained_model_path"],
+                    gr.update(visible=segformer_variant is not None),
                 )
 
             method.change(
@@ -182,6 +207,7 @@ def build_app():
                     fusion_hidden_features,
                     fusion_hidden_layers,
                     pretrained_model_path,
+                    segformer_checkpoint_override,
                 ],
             )
             config_mode.change(mode_change, inputs=config_mode, outputs=[yaml_path, custom_group])
@@ -237,6 +263,7 @@ def build_app():
                     fusion_hidden_features,
                     fusion_hidden_layers,
                     pretrained_model_path,
+                    segformer_checkpoint_override,
                 ],
                 outputs=[status, elapsed, run_dirs, gallery, console],
             )
@@ -318,31 +345,125 @@ def build_app():
             pretrain_config_path = gr.Textbox("configs/default.yaml", label="YAML Config Path")
             pretrain_data_dir = gr.Textbox("data/train", label="Training Data Directory")
             pretrain_output_dir = gr.Textbox("models/pretrained", label="Output Model Directory")
-            pretrain_model_name = gr.Textbox(pre_cfg.get("model_type", "Unet"), label="Model Name")
+            pretrain_model_name = gr.Dropdown(
+                [
+                    ("U-Net", "unet"),
+                    ("SegFormer", "segformer"),
+                    ("SegFormer HighRes", "segformer_highres"),
+                ],
+                value="unet",
+                label="Model",
+            )
             with gr.Row():
-                pretrain_samples = gr.Number(pre_cfg["numberOfSamples"], label="number_of_samples", precision=0)
-                pretrain_epochs = gr.Number(pre_cfg["epochs"], label="epochs", precision=0)
+                pretrain_samples = gr.Number(
+                    pretrain_defaults["number_of_samples"],
+                    label="Number of Samples",
+                    precision=0,
+                )
+                pretrain_epochs = gr.Number(
+                    pretrain_defaults["epochs"],
+                    label="Epochs",
+                    precision=0,
+                )
                 pretrain_batch_size = gr.Number(
-                    max(1, int(pre_cfg["numberOfSamples"]) // int(pre_cfg["batchDivisor"])),
-                    label="batch_size",
+                    pretrain_defaults["batch_size"],
+                    label="Batch Size",
                     precision=0,
                 )
             with gr.Row():
-                pretrain_lr = gr.Number(pre_cfg["lr"], label="learning_rate")
-                pretrain_clip_grad = gr.Number(pre_cfg["clipGrad"], label="clip_grad")
-                pretrain_l2 = gr.Number(pre_cfg["l2"], label="l2")
-                pretrain_alpha = gr.Number(pre_cfg["alpha"], label="alpha")
-                pretrain_beta = gr.Number(pre_cfg["beta"], label="beta")
-            pretrain_channels = gr.Textbox(
-                ",".join(str(item) for item in unet_cfg.get("channels", pre_cfg["NNchannels"])),
-                label="U-Net Channels",
+                pretrain_lr = gr.Number(
+                    pretrain_defaults["learning_rate"],
+                    label="Learning Rate",
+                )
+                pretrain_clip_grad = gr.Number(
+                    pretrain_defaults["clip_grad"],
+                    label="Gradient Clipping",
+                )
+            with gr.Group(visible=True) as unet_pretrain_group:
+                gr.Markdown(
+                    "U-Net-only loss and architecture settings. SegFormer "
+                    "variants use `segformer_pretraining` and `models.segformer` "
+                    "from the selected YAML."
+                )
+                with gr.Row():
+                    pretrain_l2 = gr.Number(
+                        pretrain_defaults["l2"],
+                        label="L2 Weight",
+                    )
+                    pretrain_alpha = gr.Number(
+                        pretrain_defaults["alpha"],
+                        label="Alpha",
+                    )
+                    pretrain_beta = gr.Number(
+                        pretrain_defaults["beta"],
+                        label="Beta",
+                    )
+                pretrain_channels = gr.Textbox(
+                    pretrain_defaults["channels"],
+                    label="U-Net Channels",
+                )
+                pretrain_conv_count = gr.Number(
+                    pretrain_defaults[
+                        "number_of_convolutions_per_block"
+                    ],
+                    label="Convolutions per Block",
+                    precision=0,
+                )
+                pretrain_batch_norm = gr.Checkbox(
+                    pretrain_defaults["batch_norm"],
+                    label="Batch Normalization",
+                )
+
+            def update_pretraining_form(config_path, model_variant):
+                try:
+                    values = pretraining_form_values(
+                        config_path,
+                        model_variant,
+                    )
+                except Exception:
+                    values = pretraining_form_values(
+                        "configs/default.yaml",
+                        model_variant,
+                    )
+                return (
+                    values["number_of_samples"],
+                    values["epochs"],
+                    values["batch_size"],
+                    values["learning_rate"],
+                    values["clip_grad"],
+                    values["l2"],
+                    values["alpha"],
+                    values["beta"],
+                    values["channels"],
+                    values["number_of_convolutions_per_block"],
+                    values["batch_norm"],
+                    gr.update(visible=values["show_unet_options"]),
+                )
+
+            pretraining_outputs = [
+                pretrain_samples,
+                pretrain_epochs,
+                pretrain_batch_size,
+                pretrain_lr,
+                pretrain_clip_grad,
+                pretrain_l2,
+                pretrain_alpha,
+                pretrain_beta,
+                pretrain_channels,
+                pretrain_conv_count,
+                pretrain_batch_norm,
+                unet_pretrain_group,
+            ]
+            pretrain_model_name.change(
+                update_pretraining_form,
+                inputs=[pretrain_config_path, pretrain_model_name],
+                outputs=pretraining_outputs,
             )
-            pretrain_conv_count = gr.Number(
-                unet_cfg.get("number_of_convolutions_per_block", pre_cfg["numberOfConvolutionsPerBlock"]),
-                label="number_of_convolutions_per_block",
-                precision=0,
+            pretrain_config_path.change(
+                update_pretraining_form,
+                inputs=[pretrain_config_path, pretrain_model_name],
+                outputs=pretraining_outputs,
             )
-            pretrain_batch_norm = gr.Checkbox(unet_cfg.get("batch_norm", True), label="batch_norm")
             start_pretrain = gr.Button("Start Pretraining", variant="primary")
             pretrain_status = gr.Textbox(label="Pretraining Status", lines=10)
             pretrain_model_path = gr.Textbox(label="Saved Model Path")

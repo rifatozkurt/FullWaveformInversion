@@ -14,13 +14,33 @@ from src.config import load_config, save_experiment_config
 from src.experiments.transfer_learning_fwi import TransferLearningFWI
 from src.experiments.transfer_segformer_fwi import TransferSegFormerFWI
 from src.io import create_run_dir, ensure_dir, load_hdf
+from src.pretrain_segformer import segformer_model_type
 
 
-DEFAULT_SAMPLE_COUNTS = "100,250,500,1000"
+DEFAULT_SAMPLE_COUNTS = "100,250,500,1000,5000,10000"
+DEFAULT_MODELS = "unet,segformer,segformer_highres"
+SUPPORTED_MODELS = ("unet", "segformer", "segformer_highres")
+MODEL_STYLES = {
+    "unet": {"label": "U-Net", "color": "#2f5aa8"},
+    "segformer": {"label": "SegFormer", "color": "#b64040"},
+    "segformer_highres": {
+        "label": "SegFormer HighRes",
+        "color": "#2f8f5b",
+    },
+}
+MODEL_METHODS = {
+    "unet": "transfer_learning_fwi",
+    "segformer": "transfer_segformer_fwi",
+    "segformer_highres": "transfer_segformer_fwi",
+}
 
 
 def parse_csv_ints(text):
-    return [int(item) for item in text.split(",") if item.strip()]
+    return [int(item.strip()) for item in text.split(",") if item.strip()]
+
+
+def parse_csv_strings(text):
+    return [item.strip().lower() for item in text.split(",") if item.strip()]
 
 
 def case_text(cases):
@@ -39,19 +59,61 @@ def unet_checkpoint_path(config, model_dir, samples):
     )
 
 
-def segformer_checkpoint_path(config, model_dir, samples):
+def segformer_checkpoint_path(
+    config,
+    model_dir,
+    samples,
+    model_variant="segformer",
+    checkpoint_selection="primary",
+):
     cfg = config["segformer_pretraining"]
-    return (
+    model_type = segformer_model_type(cfg, model_variant)
+    path = (
         Path(model_dir)
-        / f"model_{cfg.get('model_type', 'SegFormer')}_{int(cfg['epochs'])}_{cfg.get('trainingType', 'segmentation')}_{samples}.pt"
+        / f"model_{model_type}_{int(cfg['epochs'])}_"
+        f"{cfg.get('trainingType', 'segmentation')}_{samples}.pt"
+    )
+    if checkpoint_selection == "primary":
+        return path
+    return path.with_name(
+        f"{path.stem}_best_{checkpoint_selection}{path.suffix}"
+    )
+
+
+def checkpoint_path_for_model(
+    config,
+    model_dir,
+    samples,
+    model_name,
+    segformer_checkpoint_selection,
+):
+    if model_name == "unet":
+        return unet_checkpoint_path(config, model_dir, samples)
+    return segformer_checkpoint_path(
+        config,
+        model_dir,
+        samples,
+        model_variant=model_name,
+        checkpoint_selection=segformer_checkpoint_selection,
     )
 
 
 def histories_for_existing_run(run_dir, method, case_id):
     histories_dir = Path(run_dir) / "histories"
+    outputs_dir = Path(run_dir) / "outputs"
     cost_path = histories_dir / f"{method}_case{case_id}_cost_history.txt"
     mse_path = histories_dir / f"{method}_case{case_id}_mse_history.txt"
-    if not cost_path.exists() or not mse_path.exists():
+    final_gamma_path = outputs_dir / f"{method}_case{case_id}_final_gamma.h5"
+    target_gamma_path = outputs_dir / f"{method}_case{case_id}_target_gamma.h5"
+    if not all(
+        path.exists()
+        for path in (
+            cost_path,
+            mse_path,
+            final_gamma_path,
+            target_gamma_path,
+        )
+    ):
         return None
     return read_history(cost_path), read_history(mse_path)
 
@@ -68,7 +130,13 @@ def run_transfer(method, config, case_id, data_dir, run_dir, resume):
     ensure_dir(Path(run_dir) / "outputs")
     save_experiment_config(config, method, case_id, Path(run_dir) / "config.yaml")
 
-    experiment_cls = TransferLearningFWI if method == "transfer_learning_fwi" else TransferSegFormerFWI
+    experiment_classes = {
+        "transfer_learning_fwi": TransferLearningFWI,
+        "transfer_segformer_fwi": TransferSegFormerFWI,
+    }
+    if method not in experiment_classes:
+        raise ValueError(f"Unknown transfer method: {method}")
+    experiment_cls = experiment_classes[method]
     experiment = None
     result = None
     try:
@@ -176,7 +244,7 @@ def aggregate_rows(rows):
 
 def plot_case_final_vs_samples(path, rows, metric_key, ylabel, title):
     fig, ax = plt.subplots(figsize=(8, 5))
-    for model_name, color in (("unet", "#2f5aa8"), ("segformer", "#b64040")):
+    for model_name, style in MODEL_STYLES.items():
         items = sorted(
             [row for row in rows if row["model"] == model_name],
             key=lambda row: int(row["samples"]),
@@ -185,9 +253,16 @@ def plot_case_final_vs_samples(path, rows, metric_key, ylabel, title):
             continue
         samples = [int(row["samples"]) for row in items]
         values = [float(row[metric_key]) for row in items]
-        ax.plot(samples, values, marker="o", linewidth=2.2, color=color, label=model_name)
+        ax.plot(
+            samples,
+            values,
+            marker="o",
+            linewidth=2.2,
+            color=style["color"],
+            label=style["label"],
+        )
     ax.set_title(title)
-    ax.set_xlabel("pretraining samples")
+    ax.set_xlabel("Pretraining Samples")
     ax.set_ylabel(ylabel)
     ax.grid(alpha=0.3)
     ax.legend()
@@ -198,7 +273,7 @@ def plot_case_final_vs_samples(path, rows, metric_key, ylabel, title):
 
 def plot_aggregate_vs_samples(path, rows, metric_key, ylabel, title):
     fig, ax = plt.subplots(figsize=(8, 5))
-    for model_name, color in (("unet", "#2f5aa8"), ("segformer", "#b64040")):
+    for model_name, style in MODEL_STYLES.items():
         items = sorted(
             [row for row in rows if row["model"] == model_name],
             key=lambda row: int(row["samples"]),
@@ -208,9 +283,18 @@ def plot_aggregate_vs_samples(path, rows, metric_key, ylabel, title):
         samples = [int(row["samples"]) for row in items]
         mean = [float(row[f"{metric_key}_mean"]) for row in items]
         std = [float(row[f"{metric_key}_std"]) for row in items]
-        ax.errorbar(samples, mean, yerr=std, marker="o", linewidth=2.2, capsize=4, color=color, label=model_name)
+        ax.errorbar(
+            samples,
+            mean,
+            yerr=std,
+            marker="o",
+            linewidth=2.2,
+            capsize=4,
+            color=style["color"],
+            label=style["label"],
+        )
     ax.set_title(title)
-    ax.set_xlabel("pretraining samples")
+    ax.set_xlabel("Pretraining Samples")
     ax.set_ylabel(ylabel)
     ax.grid(alpha=0.3)
     ax.legend()
@@ -225,14 +309,21 @@ def plot_mse_histories(path, histories):
     sample_counts = sorted({item["samples"] for item in histories})
     fig, axes = plt.subplots(len(sample_counts), 1, figsize=(8, 3.1 * len(sample_counts)), squeeze=False)
     for ax, samples in zip(axes[:, 0], sample_counts):
-        for model_name, color in (("unet", "#2f5aa8"), ("segformer", "#b64040")):
+        for model_name, style in MODEL_STYLES.items():
             matches = [item for item in histories if item["samples"] == samples and item["model"] == model_name]
             if not matches:
                 continue
             mse = matches[0]["mse"]
-            ax.plot(np.arange(1, len(mse) + 1), mse, marker="o", linewidth=1.8, color=color, label=model_name)
-        ax.set_title(f"{samples} pretraining samples")
-        ax.set_xlabel("FWI epoch")
+            ax.plot(
+                np.arange(1, len(mse) + 1),
+                mse,
+                marker="o",
+                linewidth=1.8,
+                color=style["color"],
+                label=style["label"],
+            )
+        ax.set_title(f"{samples} Pretraining Samples")
+        ax.set_xlabel("FWI Epochs")
         ax.set_ylabel("MSE")
         ax.grid(alpha=0.3)
         ax.legend()
@@ -241,29 +332,234 @@ def plot_mse_histories(path, histories):
     plt.close(fig)
 
 
+def validate_evaluation_inputs(
+    config,
+    data_dir,
+    model_dir,
+    cases,
+    sample_counts,
+    models,
+    segformer_checkpoint_selection,
+):
+    if not cases:
+        raise ValueError("At least one case ID is required")
+    if len(cases) != len(set(cases)):
+        raise ValueError("Case IDs must be unique")
+    if not sample_counts or any(value <= 0 for value in sample_counts):
+        raise ValueError("Sample counts must be positive")
+    if len(sample_counts) != len(set(sample_counts)):
+        raise ValueError("Sample counts must be unique")
+    unknown_models = [model for model in models if model not in SUPPORTED_MODELS]
+    if not models or unknown_models:
+        raise ValueError(
+            "--models must contain one or more of: "
+            + ", ".join(SUPPORTED_MODELS)
+        )
+    if not Path(data_dir).is_dir():
+        raise FileNotFoundError(f"Evaluation data directory not found: {data_dir}")
+    if not Path(model_dir).is_dir():
+        raise FileNotFoundError(f"Model directory not found: {model_dir}")
+
+    required_data = [Path(data_dir) / "source.h5"]
+    for case_id in cases:
+        required_data.extend(
+            [
+                Path(data_dir) / f"material{case_id}.h5",
+                Path(data_dir) / f"measurement{case_id}.h5",
+            ]
+        )
+        if "unet" in models:
+            required_data.append(Path(data_dir) / f"gradient{case_id}.h5")
+    missing_data = [path for path in required_data if not path.is_file()]
+
+    checkpoints = {
+        (model_name, samples): checkpoint_path_for_model(
+            config,
+            model_dir,
+            samples,
+            model_name,
+            segformer_checkpoint_selection,
+        )
+        for samples in sample_counts
+        for model_name in models
+    }
+    missing_checkpoints = [
+        path for path in checkpoints.values() if not path.is_file()
+    ]
+    if missing_data or missing_checkpoints:
+        messages = []
+        if missing_data:
+            preview = "\n".join(str(path) for path in missing_data[:20])
+            messages.append(
+                f"Missing evaluation data file(s) ({len(missing_data)}):\n"
+                f"{preview}"
+            )
+        if missing_checkpoints:
+            preview = "\n".join(
+                str(path) for path in missing_checkpoints[:20]
+            )
+            messages.append(
+                "Missing model checkpoint(s) "
+                f"({len(missing_checkpoints)}):\n{preview}"
+            )
+        raise FileNotFoundError("\n\n".join(messages))
+    return checkpoints
+
+
+def refresh_comparison_outputs(
+    root_run_dir,
+    aggregate_dir,
+    case_dir,
+    case_id,
+    rows,
+    case_rows,
+    case_histories,
+):
+    write_summary(case_dir / "histories" / "case_summary.csv", case_rows)
+    write_summary(
+        root_run_dir
+        / "histories"
+        / "compare_unet_transformer_all_cases.csv",
+        rows,
+    )
+    aggregate = aggregate_rows(rows)
+    write_summary(
+        aggregate_dir / "histories" / "aggregate_summary.csv",
+        aggregate,
+    )
+    plot_case_final_vs_samples(
+        case_dir / "figures" / "final_mse_vs_pretraining_samples.png",
+        case_rows,
+        "final_mse",
+        "Final MSE",
+        f"Case {case_id}: Final MSE",
+    )
+    plot_case_final_vs_samples(
+        case_dir / "figures" / "f1_vs_pretraining_samples.png",
+        case_rows,
+        "f1",
+        "F1/Dice",
+        f"Case {case_id}: Void-Mask F1",
+    )
+    plot_mse_histories(
+        case_dir / "figures" / "mse_histories_by_sample_count.png",
+        case_histories,
+    )
+    plot_aggregate_vs_samples(
+        aggregate_dir
+        / "figures"
+        / "mean_final_mse_vs_pretraining_samples.png",
+        aggregate,
+        "final_mse",
+        "Mean Final MSE",
+        "Mean Final MSE Across Completed Cases",
+    )
+    plot_aggregate_vs_samples(
+        aggregate_dir / "figures" / "mean_f1_vs_pretraining_samples.png",
+        aggregate,
+        "f1",
+        "Mean F1/Dice",
+        "Mean Void-Mask F1 Across Completed Cases",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare U-Net and SegFormer transfer-FWI performance using matched pretraining sizes."
+        description=(
+            "Compare U-Net, SegFormer, and SegFormer HighRes transfer-FWI "
+            "performance using matched pretraining sizes."
+        )
     )
     parser.add_argument("--config", default="configs/experimental.yaml")
     parser.add_argument("--case", type=int, default=1)
-    parser.add_argument("--cases", default="1,2,3,4", help="Comma-separated case ids. Overrides --case when set.")
+    parser.add_argument(
+        "--cases",
+        default="1,2,3,4",
+        help="Comma-separated case IDs. Overrides --case when set.",
+    )
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--sample-counts", default=DEFAULT_SAMPLE_COUNTS)
+    parser.add_argument(
+        "--models",
+        default=DEFAULT_MODELS,
+        help=(
+            "Comma-separated models: unet, segformer, "
+            "segformer_highres."
+        ),
+    )
+    parser.add_argument(
+        "--segformer-checkpoint-selection",
+        choices=("primary", "dice_score", "val_loss"),
+        default="primary",
+        help=(
+            "Select the primary, best-Dice, or best-validation-loss "
+            "checkpoint for both SegFormer variants."
+        ),
+    )
     parser.add_argument("--model-dir", default="models/improve_transformer")
     parser.add_argument("--output-dir", default="runs/compare_unet_transformer")
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help=(
+            "Exact reusable run directory. When omitted, a timestamped "
+            "directory is created below --output-dir."
+        ),
+    )
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--void-threshold", type=float, default=0.5)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate all case files and checkpoints without running FWI.",
+    )
     args = parser.parse_args()
 
     base_config = load_config(args.config)
     data_dir = Path(args.data_dir or base_config["paths"]["casestudy_data"])
     sample_counts = parse_csv_ints(args.sample_counts)
     cases = parse_csv_ints(args.cases) if args.cases else [int(args.case)]
+    models = parse_csv_strings(args.models)
     model_dir = Path(args.model_dir)
+    if args.epochs < 1:
+        raise ValueError("--epochs must be positive")
 
-    root_run_dir = create_run_dir(ensure_dir(args.output_dir), prefix=f"compare_{case_text(cases)}")
+    checkpoints = validate_evaluation_inputs(
+        base_config,
+        data_dir,
+        model_dir,
+        cases,
+        sample_counts,
+        models,
+        args.segformer_checkpoint_selection,
+    )
+    planned_runs = len(cases) * len(sample_counts) * len(models)
+    print("Evaluation plan:")
+    print(f"  Cases: {cases}")
+    print(f"  Models: {models}")
+    print(f"  Pretraining sample counts: {sample_counts}")
+    print(f"  FWI epochs per run: {args.epochs}")
+    print(f"  Total independent FWI runs: {planned_runs}")
+    print(f"  Data directory: {data_dir}")
+    print(f"  Model directory: {model_dir}")
+    print(
+        "  SegFormer checkpoint selection: "
+        f"{args.segformer_checkpoint_selection}"
+    )
+    print("  Case execution: sequential")
+    if args.dry_run:
+        print("Dry run complete; all required data and checkpoints exist.")
+        return
+
+    root_run_dir = (
+        ensure_dir(args.run_dir)
+        if args.run_dir
+        else create_run_dir(
+            ensure_dir(args.output_dir),
+            prefix=f"compare_{case_text(cases)}",
+        )
+    )
     ensure_dir(root_run_dir / "figures")
     ensure_dir(root_run_dir / "histories")
     ensure_dir(root_run_dir / "outputs")
@@ -284,102 +580,86 @@ def main():
         case_histories = []
 
         for samples in sample_counts:
-            unet_ckpt = unet_checkpoint_path(base_config, model_dir, samples)
-            segformer_ckpt = segformer_checkpoint_path(base_config, model_dir, samples)
-            missing = [path for path in (unet_ckpt, segformer_ckpt) if not path.exists()]
-            if missing:
-                missing_text = "\n".join(str(path) for path in missing)
-                raise FileNotFoundError(f"Missing comparative checkpoint(s):\n{missing_text}")
+            for model_name in models:
+                checkpoint = checkpoints[(model_name, samples)]
+                method = MODEL_METHODS[model_name]
+                config = deepcopy(base_config)
+                config["paths"]["pretrained_models"] = str(model_dir)
+                if model_name == "unet":
+                    config["experiments"]["pretrain_samples"] = [int(samples)]
+                    config["experiments"]["transfer_learning_fwi"][
+                        "epochs"
+                    ] = int(args.epochs)
+                else:
+                    transfer_cfg = config["experiments"][
+                        "transfer_segformer_fwi"
+                    ]
+                    transfer_cfg["epochs"] = int(args.epochs)
+                    transfer_cfg["pretrained_checkpoint"] = str(checkpoint)
 
-            unet_config = deepcopy(base_config)
-            unet_config["paths"]["pretrained_models"] = str(model_dir)
-            unet_config["experiments"]["pretrain_samples"] = [int(samples)]
-            unet_config["experiments"]["transfer_learning_fwi"]["epochs"] = int(args.epochs)
-            unet_run_dir = case_dir / f"unet_{samples}"
-            print(f"\n=== Case {case_id}: U-Net transfer FWI, {samples} pretraining sample(s) ===", flush=True)
-            cost, mse, runtime, reused = run_transfer(
-                "transfer_learning_fwi",
-                unet_config,
-                case_id,
-                data_dir,
-                unet_run_dir,
-                args.resume,
-            )
-            final_gamma, target_gamma = load_output_gammas(unet_run_dir, "transfer_learning_fwi", case_id)
-            metrics = gamma_metrics(final_gamma, target_gamma, args.void_threshold)
-            case_histories.append({"model": "unet", "samples": samples, "cost": cost, "mse": mse})
-            row = {
-                "model": "unet",
-                "samples": samples,
-                "case": case_id,
-                "epochs": args.epochs,
-                "checkpoint": str(unet_ckpt),
-                "run_dir": str(unet_run_dir),
-                "reused_existing_run": reused,
-                "runtime_seconds": runtime,
-                "initial_mse": float(mse[0]),
-                "final_mse": float(mse[-1]),
-                "best_mse": float(np.min(mse)),
-                "final_cost": float(cost[-1]),
-                **metrics,
-            }
-            rows.append(row)
-            case_rows.append(row)
-
-            write_summary(case_dir / "histories" / "case_summary.csv", case_rows)
-            write_summary(root_run_dir / "histories" / "compare_unet_transformer_all_cases.csv", rows)
-            aggregate = aggregate_rows(rows)
-            write_summary(aggregate_dir / "histories" / "aggregate_summary.csv", aggregate)
-            plot_case_final_vs_samples(case_dir / "figures" / "final_mse_vs_pretraining_samples.png", case_rows, "final_mse", "final MSE", f"Case {case_id}: final MSE")
-            plot_case_final_vs_samples(case_dir / "figures" / "f1_vs_pretraining_samples.png", case_rows, "f1", "F1/Dice", f"Case {case_id}: void-mask F1")
-            plot_mse_histories(case_dir / "figures" / "mse_histories_by_sample_count.png", case_histories)
-            plot_aggregate_vs_samples(aggregate_dir / "figures" / "mean_final_mse_vs_pretraining_samples.png", aggregate, "final_mse", "mean final MSE", "Mean final MSE across completed cases")
-            plot_aggregate_vs_samples(aggregate_dir / "figures" / "mean_f1_vs_pretraining_samples.png", aggregate, "f1", "mean F1/Dice", "Mean void-mask F1 across completed cases")
-
-            seg_config = deepcopy(base_config)
-            seg_config["paths"]["pretrained_models"] = str(model_dir)
-            seg_config["experiments"]["transfer_segformer_fwi"]["epochs"] = int(args.epochs)
-            seg_config["experiments"]["transfer_segformer_fwi"]["pretrained_checkpoint"] = str(segformer_ckpt)
-            seg_run_dir = case_dir / f"segformer_{samples}"
-            print(f"\n=== Case {case_id}: SegFormer transfer FWI, {samples} pretraining sample(s) ===", flush=True)
-            cost, mse, runtime, reused = run_transfer(
-                "transfer_segformer_fwi",
-                seg_config,
-                case_id,
-                data_dir,
-                seg_run_dir,
-                args.resume,
-            )
-            final_gamma, target_gamma = load_output_gammas(seg_run_dir, "transfer_segformer_fwi", case_id)
-            metrics = gamma_metrics(final_gamma, target_gamma, args.void_threshold)
-            case_histories.append({"model": "segformer", "samples": samples, "cost": cost, "mse": mse})
-            row = {
-                "model": "segformer",
-                "samples": samples,
-                "case": case_id,
-                "epochs": args.epochs,
-                "checkpoint": str(segformer_ckpt),
-                "run_dir": str(seg_run_dir),
-                "reused_existing_run": reused,
-                "runtime_seconds": runtime,
-                "initial_mse": float(mse[0]),
-                "final_mse": float(mse[-1]),
-                "best_mse": float(np.min(mse)),
-                "final_cost": float(cost[-1]),
-                **metrics,
-            }
-            rows.append(row)
-            case_rows.append(row)
-
-            write_summary(case_dir / "histories" / "case_summary.csv", case_rows)
-            write_summary(root_run_dir / "histories" / "compare_unet_transformer_all_cases.csv", rows)
-            aggregate = aggregate_rows(rows)
-            write_summary(aggregate_dir / "histories" / "aggregate_summary.csv", aggregate)
-            plot_case_final_vs_samples(case_dir / "figures" / "final_mse_vs_pretraining_samples.png", case_rows, "final_mse", "final MSE", f"Case {case_id}: final MSE")
-            plot_case_final_vs_samples(case_dir / "figures" / "f1_vs_pretraining_samples.png", case_rows, "f1", "F1/Dice", f"Case {case_id}: void-mask F1")
-            plot_mse_histories(case_dir / "figures" / "mse_histories_by_sample_count.png", case_histories)
-            plot_aggregate_vs_samples(aggregate_dir / "figures" / "mean_final_mse_vs_pretraining_samples.png", aggregate, "final_mse", "mean final MSE", "Mean final MSE across completed cases")
-            plot_aggregate_vs_samples(aggregate_dir / "figures" / "mean_f1_vs_pretraining_samples.png", aggregate, "f1", "mean F1/Dice", "Mean void-mask F1 across completed cases")
+                model_run_dir = case_dir / f"{model_name}_{samples}"
+                print(
+                    "\n=== Case {}: {} transfer FWI, {} pretraining "
+                    "sample(s) ===".format(
+                        case_id,
+                        MODEL_STYLES[model_name]["label"],
+                        samples,
+                    ),
+                    flush=True,
+                )
+                cost, mse, runtime, reused = run_transfer(
+                    method,
+                    config,
+                    case_id,
+                    data_dir,
+                    model_run_dir,
+                    args.resume,
+                )
+                final_gamma, target_gamma = load_output_gammas(
+                    model_run_dir,
+                    method,
+                    case_id,
+                )
+                metrics = gamma_metrics(
+                    final_gamma,
+                    target_gamma,
+                    args.void_threshold,
+                )
+                case_histories.append(
+                    {
+                        "model": model_name,
+                        "samples": samples,
+                        "cost": cost,
+                        "mse": mse,
+                    }
+                )
+                row = {
+                    "model": model_name,
+                    "samples": samples,
+                    "case": case_id,
+                    "epochs": len(mse),
+                    "epochs_requested": args.epochs,
+                    "checkpoint": str(checkpoint),
+                    "run_dir": str(model_run_dir),
+                    "reused_existing_run": reused,
+                    "runtime_seconds": runtime,
+                    "initial_mse": float(mse[0]),
+                    "final_mse": float(mse[-1]),
+                    "best_mse": float(np.min(mse)),
+                    "final_cost": float(cost[-1]),
+                    **metrics,
+                }
+                rows.append(row)
+                case_rows.append(row)
+                refresh_comparison_outputs(
+                    root_run_dir,
+                    aggregate_dir,
+                    case_dir,
+                    case_id,
+                    rows,
+                    case_rows,
+                    case_histories,
+                )
 
     runtime_all = time.perf_counter() - start_all
     (root_run_dir / "runtime.txt").write_text(
@@ -390,10 +670,15 @@ def main():
                 f"cases: {','.join(str(case_id) for case_id in cases)}",
                 f"epochs: {args.epochs}",
                 f"sample_counts: {args.sample_counts}",
+                f"models: {','.join(models)}",
                 f"model_dir: {model_dir}",
                 f"data_dir: {data_dir}",
+                "segformer_checkpoint_selection: "
+                f"{args.segformer_checkpoint_selection}",
                 f"void_threshold: {args.void_threshold}",
                 f"resume: {args.resume}",
+                "case_execution: sequential",
+                f"planned_runs: {planned_runs}",
                 f"runtime_seconds: {runtime_all:.6f}",
             ]
         )

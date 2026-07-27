@@ -7,5 +7,4 @@ PyYAML
 tqdm
 gradio
 pillow
-transformers
-transformers
+transformers==5.12.1
