@@ -12,7 +12,6 @@ __pycache__/
 # Project data and generated artifacts
 data/
 legacy/
-models/
 notes/
 runs/
 temp/

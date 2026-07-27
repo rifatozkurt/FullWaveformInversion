@@ -250,7 +250,7 @@ def main():
     parser.add_argument("--cases", default="1,2,3,4", help="Comma-separated case ids. Overrides --case when set.")
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--sample-counts", default=DEFAULT_SAMPLE_COUNTS)
-    parser.add_argument("--model-dir", default="models/comparative")
+    parser.add_argument("--model-dir", default="models/improve_transformer")
     parser.add_argument("--output-dir", default="runs/compare_unet_transformer")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--void-threshold", type=float, default=0.5)
