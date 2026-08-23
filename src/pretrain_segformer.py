@@ -18,6 +18,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(ROOT))
 
 from src import io
+from src import metrics
 from src import networks as NN
 from src.config import load_config
 from src.experiments.base import get_device, simulation_parameters
@@ -208,58 +209,87 @@ def build_segformer_model(config, params, model_variant=None):
     return model, variant
 
 
-def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device):
+def segformer_loss(model, gradient, gamma_target, objective, criterion, dice_weight,
+                   void_threshold):
+    """
+    Training objective for the SegFormer.
+
+    `mse` (default) regresses the continuous gamma field under mean squared
+    error -- exactly the U-Net's objective, so the head-to-head comparison
+    isolates architecture rather than loss function, target representation and
+    output convention all at once.
+
+    `bce_dice` is the original segmentation objective (weighted BCE + soft Dice
+    against a binarized mask), retained so earlier runs stay reproducible.
+
+    Returns (total_loss, components dict).
+    """
+    if objective == "mse":
+        gamma_pred = model(gradient)
+        loss = torch.mean((gamma_pred - gamma_target) ** 2)
+        return loss, {"mse": float(loss.detach().cpu()), "bce": 0.0, "dice": 0.0}
+
+    if objective == "bce_dice":
+        mask = metrics.void_mask(gamma_target, void_threshold).float()
+        logits = model.forward_logits(gradient)
+        bce_loss = criterion(logits, mask)
+        dice_loss = dice_loss_from_logits(logits, mask)
+        loss = bce_loss + float(dice_weight) * dice_loss
+        return loss, {
+            "mse": 0.0,
+            "bce": float(bce_loss.detach().cpu()),
+            "dice": float(dice_loss.detach().cpu()),
+        }
+
+    raise ValueError(
+        f"Unknown segformer_pretraining.objective: {objective!r} (use 'mse' or 'bce_dice')"
+    )
+
+
+def evaluate_model(model, dataloader, criterion, dice_weight, threshold, device,
+                   objective="mse", void_threshold=metrics.VOID_THRESHOLD):
+    """
+    Validation metrics.
+
+    gamma error is measured against the TRUE gamma field, not against a gamma
+    reconstructed from a binarized mask as an earlier version did -- those are
+    different quantities and would silently diverge if the data ever contained
+    partial-volume gamma. Void masks come from the shared helper, thresholding
+    gamma directly, so the number is comparable with the U-Net's.
+    """
     model.eval()
-    totals = {
-        "val_loss": 0.0,
-        "val_bce_loss": 0.0,
-        "val_dice_loss": 0.0,
-    }
+    totals = {"val_loss": 0.0, "val_bce_loss": 0.0, "val_dice_loss": 0.0}
     samples = 0
     squared_gamma_error = 0.0
     gamma_elements = 0
-    true_positive = 0.0
-    false_positive = 0.0
-    false_negative = 0.0
-    gamma_min = float(model.gamma_min.detach().cpu())
+    true_positive = false_positive = false_negative = 0.0
     with torch.no_grad():
-        for gradient, target in dataloader:
+        for gradient, gamma_target in dataloader:
             gradient = gradient.to(device)
-            target = target.to(device)
-            logits = model.forward_logits(gradient)
-            bce_loss = criterion(logits, target)
-            dice_loss = dice_loss_from_logits(logits, target)
-            loss = bce_loss + float(dice_weight) * dice_loss
-            batch_size = len(target)
+            gamma_target = gamma_target.to(device)
+            loss, parts = segformer_loss(
+                model, gradient, gamma_target, objective, criterion,
+                dice_weight, void_threshold,
+            )
+            batch_size = len(gamma_target)
             totals["val_loss"] += float(loss.detach().cpu()) * batch_size
-            totals["val_bce_loss"] += float(bce_loss.detach().cpu()) * batch_size
-            totals["val_dice_loss"] += float(dice_loss.detach().cpu()) * batch_size
+            totals["val_bce_loss"] += parts["bce"] * batch_size
+            totals["val_dice_loss"] += parts["dice"] * batch_size
             samples += batch_size
 
-            void_probability = torch.sigmoid(logits)
-            gamma_pred = 1.0 - (1.0 - gamma_min) * void_probability
-            gamma_target = 1.0 - (1.0 - gamma_min) * target
+            gamma_pred = model(gradient)
             squared_gamma_error += float(
                 ((gamma_pred - gamma_target) ** 2).sum().detach().cpu()
             )
             gamma_elements += gamma_target.numel()
 
-            predicted_void = void_probability >= threshold
-            target_void = target >= 0.5
-            true_positive += float(
-                (predicted_void & target_void).sum().detach().cpu()
-            )
-            false_positive += float(
-                (predicted_void & ~target_void).sum().detach().cpu()
-            )
-            false_negative += float(
-                (~predicted_void & target_void).sum().detach().cpu()
-            )
+            predicted_void = metrics.void_mask(gamma_pred, threshold)
+            target_void = metrics.void_mask(gamma_target, void_threshold)
+            true_positive += float((predicted_void & target_void).sum().detach().cpu())
+            false_positive += float((predicted_void & ~target_void).sum().detach().cpu())
+            false_negative += float((~predicted_void & target_void).sum().detach().cpu())
 
-    result = {
-        key: value / max(samples, 1)
-        for key, value in totals.items()
-    }
+    result = {key: value / max(samples, 1) for key, value in totals.items()}
     eps = 1e-8
     result.update(
         {
@@ -337,20 +367,27 @@ def pretrain_segformer(
     else:
         sample_ids = random.sample(range(available_samples), number_of_samples)
     gradients = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
-    masks = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
+    # The TRUE gamma field is the stored target. The binarized void mask is
+    # derived from it on demand, so gamma error is measured against the real
+    # field rather than one reconstructed from a mask, and the U-Net and the
+    # SegFormer are trained against the same quantity.
+    gammas = torch.zeros((number_of_samples, 1, Nx + 1, Ny + 1), dtype=torch.float32)
 
     print(f"Loading {number_of_samples} SegFormer pretraining sample(s) from {destination}", flush=True)
     for row, sample_id in enumerate(sample_ids):
         if row == 0 or (row + 1) % max(1, number_of_samples // 20) == 0 or row + 1 == number_of_samples:
             print(f"Loading sample {row + 1}/{number_of_samples}: material{sample_id}.h5, gradient{sample_id}.h5", flush=True)
         gradients[row, 0] = torch.tensor(io.load_hdf(destination / f"gradient{sample_id}.h5"), dtype=torch.float32)
-        gamma = torch.tensor(io.load_hdf(destination / f"material{sample_id}.h5"), dtype=torch.float32)
-        masks[row, 0] = (gamma <= float(cfg["void_gamma_threshold"])).float()
+        gammas[row, 0] = torch.tensor(io.load_hdf(destination / f"material{sample_id}.h5"), dtype=torch.float32)
 
-    norm_cfg = dict(cfg.get("gradient_normalization", {}))
-    gradients = NN.normalize_gradient_for_transformer(gradients, **norm_cfg)
+    # Shared with the U-Net: top-level block first, SegFormer block only as a
+    # fallback for older configs.
+    norm_cfg = dict(
+        config.get("gradient_normalization", cfg.get("gradient_normalization", {})) or {}
+    )
+    gradients = NN.normalize_gradient(gradients, **norm_cfg)
 
-    dataset = NN.FWIDataset(gradients, masks, device)
+    dataset = NN.FWIDataset(gradients, gammas, device)
     train_set, val_set = torch.utils.data.random_split(
         dataset,
         [0.8, 0.2],
@@ -404,10 +441,14 @@ def pretrain_segformer(
         flush=True,
     )
 
+    objective = str(cfg.get("objective", "mse")).lower()
+    void_gamma_threshold = float(cfg.get("void_gamma_threshold", metrics.VOID_THRESHOLD))
+
     pos_weight_cfg = cfg.get("bce_pos_weight", "auto")
     if pos_weight_cfg == "auto":
-        positive = masks[train_set.indices].sum()
-        negative = masks[train_set.indices].numel() - positive
+        train_masks = metrics.void_mask(gammas[train_set.indices], void_gamma_threshold)
+        positive = train_masks.sum()
+        negative = train_masks.numel() - positive
         pos_weight = (negative / torch.clamp(positive, min=1.0)).to(device)
     elif pos_weight_cfg is None:
         pos_weight = None
@@ -465,14 +506,14 @@ def pretrain_segformer(
         train_bce = 0.0
         train_dice = 0.0
         train_grad_norm = 0.0
-        for batch, (gradient, target) in enumerate(train_loader):
+        for batch, (gradient, gamma_target) in enumerate(train_loader):
             gradient = gradient.to(device)
-            target = target.to(device)
+            gamma_target = gamma_target.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model.forward_logits(gradient)
-            bce_loss = criterion(logits, target)
-            dice_loss = dice_loss_from_logits(logits, target)
-            loss = bce_loss + dice_weight * dice_loss
+            loss, parts = segformer_loss(
+                model, gradient, gamma_target, objective, criterion,
+                dice_weight, void_gamma_threshold,
+            )
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), float(cfg["clipGrad"])
@@ -481,8 +522,8 @@ def pretrain_segformer(
             if scheduler is not None and scheduler_per_step:
                 scheduler.step()
             train_loss += float(loss.detach().cpu())
-            train_bce += float(bce_loss.detach().cpu())
-            train_dice += float(dice_loss.detach().cpu())
+            train_bce += parts["bce"]
+            train_dice += parts["dice"]
             train_grad_norm += float(grad_norm.detach().cpu())
             if (
                 batch == 0
@@ -503,7 +544,10 @@ def pretrain_segformer(
             scheduler.step()
 
         train_batches = max(1, len(train_loader))
-        val_metrics = evaluate_model(model, val_loader, criterion, dice_weight, eval_threshold, device)
+        val_metrics = evaluate_model(
+            model, val_loader, criterion, dice_weight, eval_threshold, device,
+            objective=objective, void_threshold=void_gamma_threshold,
+        )
         row = {
             "epoch": epoch + 1,
             "train_loss": train_loss / train_batches,
@@ -538,6 +582,7 @@ def pretrain_segformer(
                     **dict(cfg),
                     "model_variant": model_variant,
                     "model_type": model_type,
+                    "objective": objective,
                 },
                 "epoch": epoch + 1,
                 "validation_metrics": val_metrics,

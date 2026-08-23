@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -63,7 +64,7 @@ class ConventionalFWIWithInitialGuess:
         model.load_state_dict(torch.load(path, map_location=device))
 
         forwardSolver = create_forward_solver(params, device)
-        inputData = normalize_input_data(initialGradient).to(device)
+        inputData = normalize_input_data(initialGradient, self.config).to(device)
 
         epochs = int(cfg["epochs"])
         u0, u1 = create_initial_conditions(params, device)
@@ -117,7 +118,7 @@ class ConventionalFWIWithInitialGuess:
             historyCost[epoch] = cost
             # Memory/transfer patch: compute MSE on-device instead of copying
             # the full predicted gamma to CPU each epoch.
-            historyMSE[epoch] = 0.5 * torch.mean((gamma - gammaPred) ** 2).detach().cpu()
+            historyMSE[epoch] = metrics.gamma_mse(gammaPred, gamma, ghost=1)
             historyGamma[epoch + 1] = gammaPred.detach().cpu()
             elapsed_time = time.perf_counter() - start
             if epoch % 2 == 0:

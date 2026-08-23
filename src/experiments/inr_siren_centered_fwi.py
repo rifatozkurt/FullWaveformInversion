@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -50,8 +51,8 @@ class INRSIRENCenteredFWI:
             int(cfg["hidden_layers"]),
             params["gamma0"],
             float(cfg["omega0"]),
-            cfg.get("output_mode", "voidness"),
-            float(cfg.get("final_bias", -5.0)),
+            cfg.get("output_mode", "direct_gamma"),
+            float(cfg.get("final_bias", 3.0)),
         ).to(device)
 
         x = torch.linspace(-1, 1, params["Nx"] + 1, device=device)
@@ -147,7 +148,7 @@ class INRSIRENCenteredFWI:
             delta_gamma = gamma_after - gamma_before
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gamma_after - target_inner) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gamma_after, target_inner)
             gammaHistory[epoch + 1] = gamma_after.detach().cpu()
 
             row = {

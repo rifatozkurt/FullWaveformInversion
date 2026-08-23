@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -53,11 +54,14 @@ class INRMPEFWI:
             features_per_level=int(cfg["features_per_level"]),
             hidden_features=int(cfg["hidden_features"]),
             hidden_layers=int(cfg["hidden_layers"]),
-            output_mode=cfg.get("output_mode", "voidness"),
-            final_bias=float(cfg.get("final_bias", -5.0)),
+            output_mode=cfg.get("output_mode", "direct_gamma"),
+            final_bias=float(cfg.get("final_bias", 3.0)),
             grid_init_std=float(cfg.get("grid_init_std", 1e-4)),
             align_corners=bool(cfg.get("align_corners", True)),
             swap_grid_coords=bool(cfg.get("swap_grid_coords", False)),
+            grid_aspect=float(
+                cfg.get("grid_aspect", (params["Ny"] + 1) / (params["Nx"] + 1))
+            ),
         ).to(device)
 
         x = torch.linspace(-1, 1, params["Nx"] + 1, device=device)
@@ -149,7 +153,7 @@ class INRMPEFWI:
             delta_gamma = gamma_after - gamma_before
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gamma_after - target_inner) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gamma_after, target_inner)
             gammaHistory[epoch + 1] = gamma_after.detach().cpu()
 
             row = {

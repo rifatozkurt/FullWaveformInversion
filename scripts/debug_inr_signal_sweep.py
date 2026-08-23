@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src.config import load_config
 from src.experiments.base import (
     create_forward_solver,
@@ -264,8 +265,8 @@ def run_trial(
         with torch.no_grad():
             gamma_after = model(coords).reshape(params["Nx"] + 1, params["Ny"] + 1)
         delta_gamma = gamma_after - gamma_before_detached
-        mse_before = 0.5 * torch.mean((gamma_before_detached - target_inner) ** 2)
-        mse_after = 0.5 * torch.mean((gamma_after - target_inner) ** 2)
+        mse_before = metrics.gamma_mse(gamma_before_detached, target_inner)
+        mse_after = metrics.gamma_mse(gamma_after, target_inner)
         cost_value = float(cost.detach().cpu())
         if first_cost is None:
             first_cost = cost_value

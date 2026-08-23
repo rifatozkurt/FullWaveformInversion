@@ -10,6 +10,7 @@ import torch
 
 from src import finite_difference as FiniteDifference
 from src import io
+from src import networks as NN
 from src import utils
 
 mpl.rcParams.update({"font.size": 14})
@@ -146,11 +147,28 @@ def load_case_data(case_id, data_dir, params, device, load_gradient=False):
     return gamma, initialGradient, um, source
 
 
-def normalize_input_data(inputData):
-    return (inputData - torch.amin(inputData, (2, 3), keepdim=True)) / (
-        torch.amax(inputData, (2, 3), keepdim=True)
-        - torch.amin(inputData, (2, 3), keepdim=True)
-    ) * 2 - 1
+def gradient_normalization_config(config):
+    """
+    The single normalization setting shared by every model.
+
+    Read from the top-level `gradient_normalization:` block so that pretraining
+    and downstream FWI cannot drift apart, and so that the U-Net and the
+    SegFormer are fed identically preprocessed inputs.
+    """
+    return dict((config or {}).get("gradient_normalization", {}) or {})
+
+
+def normalize_input_data(inputData, config=None, **overrides):
+    """
+    Normalize an adjoint gradient for network input.
+
+    Delegates to `networks.normalize_gradient`, which every architecture now
+    shares. Pass `config` to pick up the run's `gradient_normalization` block;
+    without it the default (`robust_abs`) applies.
+    """
+    settings = gradient_normalization_config(config)
+    settings.update(overrides)
+    return NN.normalize_gradient(inputData, **settings)
 
 
 def model_path(config, model_type, epochs, training_type, samples, channels):

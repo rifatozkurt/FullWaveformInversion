@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src.config import load_config
 from src.experiments.base import (
     create_forward_solver,
@@ -90,7 +91,8 @@ def build_model(config, method, params, device):
         )
     elif method == "inr_lr_fwi":
         model = INR_LR(
-            rank=int(cfg["rank"]),
+            rank_x=int(cfg.get("rank_x", cfg.get("rank", 128))),
+            rank_y=int(cfg.get("rank_y", cfg.get("rank", 64))),
             hidden_features=int(cfg["hidden_features"]),
             hidden_layers=int(cfg["hidden_layers"]),
             omega0=float(cfg.get("omega0", 30)),
@@ -419,7 +421,7 @@ def main():
         output_bias_after = output_bias.detach().clone()
 
     delta_gamma = gamma_after - gamma_before
-    mse_after = 0.5 * torch.mean((gamma_after - target_inner) ** 2)
+    mse_after = metrics.gamma_mse(gamma_after, target_inner)
     grad_update_dot = torch.sum(gradient.detach() * delta_gamma.detach())
     scaled_grad_update_dot = torch.sum(scaled_gradient.detach() * delta_gamma.detach())
     grad_update_cosine = grad_update_dot / (

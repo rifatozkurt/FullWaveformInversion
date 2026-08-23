@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -46,13 +47,14 @@ class INRLrFWI:
 
         torch.manual_seed(int(cfg["seed"]))
         model = NN.INR_LR(
-            rank=int(cfg["rank"]),
+            rank_x=int(cfg.get("rank_x", cfg.get("rank", 128))),
+            rank_y=int(cfg.get("rank_y", cfg.get("rank", 64))),
             hidden_features=int(cfg["hidden_features"]),
             hidden_layers=int(cfg["hidden_layers"]),
             gamma0=params["gamma0"],
             omega0=float(cfg["omega0"]),
-            output_mode=cfg.get("output_mode", "voidness"),
-            final_bias=float(cfg.get("final_bias", -5.0)),
+            output_mode=cfg.get("output_mode", "direct_gamma"),
+            final_bias=float(cfg.get("final_bias", 3.0)),
             core_init_std=float(cfg.get("core_init_std", 1e-3)),
         ).to(device)
 
@@ -147,7 +149,7 @@ class INRLrFWI:
             delta_gamma = gamma_after - gamma_before
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gamma_after - target_inner) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gamma_after, target_inner)
             gammaHistory[epoch + 1] = gamma_after.detach().cpu()
 
             row = {
@@ -221,7 +223,8 @@ class INRLrFWI:
             run_dir=Path(run_dir),
             metadata={
                 "epochs": epochs,
-                "rank": int(cfg["rank"]),
+                "rank_x": int(cfg.get("rank_x", cfg.get("rank", 128))),
+                "rank_y": int(cfg.get("rank_y", cfg.get("rank", 64))),
                 "omega0": float(cfg["omega0"]),
                 "core_init_std": float(cfg.get("core_init_std", 1e-3)),
                 **initial_stats,

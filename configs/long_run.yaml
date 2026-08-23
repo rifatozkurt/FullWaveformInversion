@@ -6,6 +6,17 @@ paths:
   checkpoints: models/checkpoints
   runs: runs/long_run_centered
 
+# Shared adjoint-gradient normalization, used by U-Net pretraining, SegFormer
+# pretraining and every downstream FWI experiment. One setting for all models so
+# the architecture comparison is not confounded by preprocessing.
+#   robust_abs : sign-preserving divide by the `quantile` of |gradient|, clamped
+#   minmax     : legacy per-sample [min,max] -> [-1,1] affine map
+gradient_normalization:
+  mode: robust_abs
+  quantile: 0.99
+  eps: 1.0e-08
+  clamp: 1.0
+
 simulation:
   Lx: 0.1
   Ly: 0.05
@@ -106,8 +117,8 @@ experiments:
     seed: 50
     hidden_features: 128
     hidden_layers: 4
-    output_mode: voidness
-    final_bias: -5.0
+    output_mode: direct_gamma
+    final_bias: 3.0
     lr: 1.0e-04
     alpha: -0.5
     beta: 0.2
@@ -122,13 +133,12 @@ experiments:
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    output_mode: direct_gamma
+    final_bias: 3.0
+    lr: 3.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 35
-    clipGrad: 5.0e-05
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
@@ -139,13 +149,12 @@ experiments:
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    output_mode: direct_gamma
+    final_bias: 3.0
+    lr: 3.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 500
-    clipGrad: 5.0e-05
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
@@ -153,14 +162,17 @@ experiments:
 
   inr_lr_fwi:
     seed: 50
-    rank: 32
+    # r_x, r_y = half the model dimension per axis (R13 App. B.1; R14 uses
+    # r1=50, r2=100). Domain is 256 x 128, so 128 and 64.
+    rank_x: 128
+    rank_y: 64
     hidden_features: 128
     hidden_layers: 3
     omega0: 30
     core_init_std: 1.0e-03
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    output_mode: direct_gamma
+    final_bias: 3.0
+    lr: 3.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 150
@@ -180,9 +192,11 @@ experiments:
     grid_init_std: 1.0e-04
     align_corners: true
     swap_grid_coords: false
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    # feature-grid H/W; (Ny+1)/(Nx+1) keeps grid cells square
+    grid_aspect: 0.5
+    output_mode: direct_gamma
+    final_bias: 3.0
+    lr: 3.0e-02
     alpha: -0.5
     beta: 0.2
     epochs: 500
@@ -202,9 +216,11 @@ experiments:
     grid_init_std: 1.0e-02
     align_corners: true
     swap_grid_coords: false
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    # feature-grid H/W; (Ny+1)/(Nx+1) keeps grid cells square
+    grid_aspect: 0.5
+    output_mode: direct_gamma
+    final_bias: 3.0
+    lr: 3.0e-02
     alpha: -0.5
     beta: 0.2
     epochs: 500
@@ -215,23 +231,31 @@ experiments:
 
   inr_ig_fwi:
     seed: 50
-    fusion_alpha: 0.5
+    lr_fusion: 3.0e-04
+    lr_siren: 3.0e-04  # SIREN branch behaves like IFWI; 100x lower than the grid
+    lr_grid: 1.0e-01  # grid branch behaves like MPE-FWI
+    feature_norm: true     # unit-RMS the fused vector before the fusion MLP
+    fusion_init_std: 1.0      # was hardcoded 1e-3, which left gamma ~1000x too flat
+    fusion_alpha: 0.5      # R13 §6.4: "typically set to 0.5" (was 0.8)
     num_levels: 16
     base_resolution: 50
     per_level_scale: 1.05
     features_per_level: 2
-    grid_init_std: 1.0e-04
+    grid_init_std: 1.0e-01  # brings grid features to parity with SIREN's
     align_corners: true
     swap_grid_coords: false
+    # feature-grid H/W; (Ny+1)/(Nx+1) keeps grid cells square
+    grid_aspect: 0.5
     siren_hidden_features: 128
     siren_hidden_layers: 2
     siren_out_features: 128
     omega0: 30
     fusion_hidden_features: 64
     fusion_hidden_layers: 2
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    output_mode: direct_gamma
+    final_bias: 3.0      # matches the other INRs (was 4.5)
+    # base lr: only a fallback -- lr_grid/lr_siren/lr_fusion above override it
+    lr: 3.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 500
@@ -242,23 +266,31 @@ experiments:
 
   inr_ig_centered_fwi:
     seed: 50
-    fusion_alpha: 0.5
+    lr_fusion: 3.0e-04
+    lr_siren: 3.0e-04  # SIREN branch behaves like IFWI; 100x lower than the grid
+    lr_grid: 1.0e-01  # grid branch behaves like MPE-FWI
+    feature_norm: true     # unit-RMS the fused vector before the fusion MLP
+    fusion_init_std: 1.0      # was hardcoded 1e-3, which left gamma ~1000x too flat
+    fusion_alpha: 0.5      # R13 §6.4: "typically set to 0.5" (was 0.8)
     num_levels: 16
     base_resolution: 50
     per_level_scale: 1.05
     features_per_level: 2
-    grid_init_std: 1.0e-02
+    grid_init_std: 1.0e-01  # brings grid features to parity with SIREN's
     align_corners: true
     swap_grid_coords: false
+    # feature-grid H/W; (Ny+1)/(Nx+1) keeps grid cells square
+    grid_aspect: 0.5
     siren_hidden_features: 128
     siren_hidden_layers: 2
     siren_out_features: 128
     omega0: 30
     fusion_hidden_features: 64
     fusion_hidden_layers: 2
-    output_mode: voidness
-    final_bias: -5.0
-    lr: 1.0e-04
+    output_mode: direct_gamma
+    final_bias: 3.0      # matches the other INRs (was 4.5)
+    # base lr: only a fallback -- lr_grid/lr_siren/lr_fusion above override it
+    lr: 3.0e-04
     alpha: -0.5
     beta: 0.2
     epochs: 500
@@ -272,7 +304,8 @@ experiments:
     lr: 5.0e-04
     alpha: -0.5
     beta: 0.2
-    epochs: 5
+    epochs: 15
+    restore_best_observed: true
     clipGrad: 5.0e-05
     l2: 1.0e-06
     costScaling: 1.0e+10

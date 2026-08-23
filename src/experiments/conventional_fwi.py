@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src.experiments.base import (
     ExperimentResult,
     create_forward_solver,
@@ -94,7 +95,7 @@ class ConventionalFWI:
             historyCost[epoch] = cost
             # Memory/transfer patch: compute MSE on-device instead of copying
             # the full predicted gamma to CPU each epoch.
-            historyMSE[epoch] = 0.5 * torch.mean((gamma - gammaPred) ** 2).detach().cpu()
+            historyMSE[epoch] = metrics.gamma_mse(gammaPred, gamma, ghost=1)
             historyGamma[epoch + 1] = gammaPred.detach().cpu()
 
             elapsed_time = time.perf_counter() - start

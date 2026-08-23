@@ -185,8 +185,8 @@ experiments:
     seed: 50
     hidden_features: 128
     hidden_layers: 4
-    output_mode: voidness
-    final_bias: -5.0
+    output_mode: direct_gamma
+    final_bias: 5.0
     lr: 0.0001
     alpha: -0.5
     beta: 0.2
@@ -200,13 +200,12 @@ experiments:
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
-    output_mode: voidness
-    final_bias: -5.0
+    output_mode: direct_gamma
+    final_bias: 5.0
     lr: 0.001
     alpha: -0.5
     beta: 0.2
     epochs: 35
-    clipGrad: 5.0e-05
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
@@ -216,26 +215,26 @@ experiments:
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
-    output_mode: voidness
-    final_bias: -5.0
+    output_mode: direct_gamma
+    final_bias: 5.0
     lr: 0.001
     alpha: -0.5
     beta: 0.2
     epochs: 35
-    clipGrad: 5.0e-05
     tv_weight: 0.0
     tv_type: anisotropic
     l2: 1.0e-06
     costScaling: 10000000000.0
   inr_lr_fwi:
     seed: 50
-    rank: 32
+    rank_x: 128
+    rank_y: 64
     hidden_features: 128
     hidden_layers: 3
     omega0: 30
     core_init_std: 0.001
-    output_mode: voidness
-    final_bias: -5.0
+    output_mode: direct_gamma
+    final_bias: 5.0
     lr: 0.001
     alpha: -0.5
     beta: 0.2
@@ -255,8 +254,9 @@ experiments:
     grid_init_std: 0.0001
     align_corners: true
     swap_grid_coords: false
-    output_mode: voidness
-    final_bias: -5
+    grid_aspect: 0.5
+    output_mode: direct_gamma
+    final_bias: 5.0
     lr: 0.0001
     alpha: -0.5
     beta: 0.2
@@ -276,8 +276,9 @@ experiments:
     grid_init_std: 0.01
     align_corners: true
     swap_grid_coords: false
-    output_mode: voidness
-    final_bias: -4.5
+    grid_aspect: 0.5
+    output_mode: direct_gamma
+    final_bias: 4.5
     lr: 0.01
     alpha: -0.5
     beta: 0.2
@@ -296,14 +297,15 @@ experiments:
     grid_init_std: 0.0001
     align_corners: true
     swap_grid_coords: false
+    grid_aspect: 0.5
     siren_hidden_features: 128
     siren_hidden_layers: 2
     siren_out_features: 128
     omega0: 30
     fusion_hidden_features: 64
     fusion_hidden_layers: 2
-    output_mode: voidness
-    final_bias: -4.5
+    output_mode: direct_gamma
+    final_bias: 4.5
     lr: 0.01
     alpha: -0.5
     beta: 0.2
@@ -322,14 +324,15 @@ experiments:
     grid_init_std: 0.01
     align_corners: true
     swap_grid_coords: false
+    grid_aspect: 0.5
     siren_hidden_features: 128
     siren_hidden_layers: 2
     siren_out_features: 128
     omega0: 30
     fusion_hidden_features: 64
     fusion_hidden_layers: 2
-    output_mode: voidness
-    final_bias: -4.5
+    output_mode: direct_gamma
+    final_bias: 4.5
     lr: 0.01
     alpha: -0.5
     beta: 0.2

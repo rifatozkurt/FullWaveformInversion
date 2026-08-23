@@ -21,4 +21,4 @@ overrides:
   experiments:
     pretrain_samples: [15000]
     transfer_segformer_fwi:
-      pretrained_checkpoint: model_SegFormer_60_segmentation_15000.pt
+      pretrained_checkpoint: model_SegFormer_100_segmentation_15000.pt

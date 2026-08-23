@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -49,8 +50,8 @@ class INRFWI:
             int(cfg["hidden_features"]),
             int(cfg["hidden_layers"]),
             params["gamma0"],
-            cfg.get("output_mode", "voidness"),
-            float(cfg.get("final_bias", -5.0)),
+            cfg.get("output_mode", "direct_gamma"),
+            float(cfg.get("final_bias", 3.0)),
         )
         NN.initWeights(model)
         model.reset_output_bias()
@@ -149,7 +150,7 @@ class INRFWI:
             delta_gamma = gamma_after - gamma_before
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gamma_after - target_inner) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gamma_after, target_inner)
             gammaHistory[epoch + 1] = gamma_after.detach().cpu()
 
             row = {

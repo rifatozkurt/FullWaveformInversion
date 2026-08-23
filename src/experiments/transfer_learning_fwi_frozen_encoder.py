@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -81,7 +82,7 @@ class TransferLearningFWIFrozenEncoder:
 
         trainable_parameters = freeze_unet_encoder(model)
         forwardSolver = create_forward_solver(params, device)
-        inputData = normalize_input_data(initialGradient).to(device)
+        inputData = normalize_input_data(initialGradient, self.config).to(device)
 
         gammaPred = torch.ones(
             (1, 1, params["Nx"] + 3, params["Ny"] + 3),
@@ -146,7 +147,7 @@ class TransferLearningFWIFrozenEncoder:
             scheduler.step()
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gammaPred[0] - gamma) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gammaPred, gamma, ghost=1)
             gammaHistory[epoch + 1] = gammaPred[0, 0, 1:-1, 1:-1].detach().cpu()
 
             elapsed_time = time.perf_counter() - start

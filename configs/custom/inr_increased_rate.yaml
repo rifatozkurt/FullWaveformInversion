@@ -125,7 +125,6 @@ experiments:
     alpha: -0.5
     beta: 0.2
     epochs: 35
-    clipGrad: 5.0e-05
     l2: 1.0e-06
     costScaling: 1000000000.0
   inr_siren_fwi:
@@ -137,7 +136,6 @@ experiments:
     alpha: -0.5
     beta: 0.2
     epochs: 35
-    clipGrad: 5.0e-05
     l2: 1.0e-06
     costScaling: 1000000000.0
   transfer_learning_fwi:

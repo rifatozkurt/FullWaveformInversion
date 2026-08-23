@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -22,6 +23,33 @@ from src.experiments.base import (
     tensor_stats,
     total_variation_loss,
 )
+
+
+def ig_parameter_groups(model, cfg):
+    """
+    Separate learning rates for IG-FWI's three parameter groups.
+
+    IG fuses two branches whose measured optimal learning rates differ by ~100x:
+    the multi-resolution grid behaves like MPE-FWI (optimum 3e-2) while the
+    sinusoidal branch behaves like SIREN/IFWI (optimum 3e-4). A single shared
+    learning rate is therefore either far too high for the SIREN branch, which
+    makes the inversion erratic, or far too low for the grid, which leaves it
+    inert -- both were observed.
+
+    Separate parameter groups are the standard treatment for grid-encoding
+    hybrids (Instant-NGP trains its hash grid and its MLP with different rates)
+    rather than an invention of this thesis. `LambdaLR` scales every group by the
+    same factor, so the ratio between the groups is preserved across the schedule.
+    """
+    base = float(cfg["lr"])
+    return [
+        {"params": list(model.grids),
+         "lr": float(cfg.get("lr_grid", base)), "name": "grid"},
+        {"params": list(model.siren_layers.parameters()),
+         "lr": float(cfg.get("lr_siren", base)), "name": "siren"},
+        {"params": list(model.fusion_mlp.parameters()),
+         "lr": float(cfg.get("lr_fusion", base)), "name": "fusion"},
+    ]
 
 
 class INRIGCenteredFWI:
@@ -55,14 +83,19 @@ class INRIGCenteredFWI:
             grid_init_std=float(cfg.get("grid_init_std", 1e-4)),
             align_corners=bool(cfg.get("align_corners", True)),
             swap_grid_coords=bool(cfg.get("swap_grid_coords", False)),
+            grid_aspect=float(
+                cfg.get("grid_aspect", (params["Ny"] + 1) / (params["Nx"] + 1))
+            ),
             siren_hidden_features=int(cfg["siren_hidden_features"]),
             siren_hidden_layers=int(cfg["siren_hidden_layers"]),
             siren_out_features=int(cfg["siren_out_features"]),
             omega0=float(cfg["omega0"]),
             fusion_hidden_features=int(cfg["fusion_hidden_features"]),
             fusion_hidden_layers=int(cfg["fusion_hidden_layers"]),
-            output_mode=cfg.get("output_mode", "voidness"),
-            final_bias=float(cfg.get("final_bias", -5.0)),
+            fusion_init_std=float(cfg.get("fusion_init_std", 1e-3)),
+            feature_norm=bool(cfg.get("feature_norm", False)),
+            output_mode=cfg.get("output_mode", "direct_gamma"),
+            final_bias=float(cfg.get("final_bias", 3.0)),
         ).to(device)
 
         x = torch.linspace(-1, 1, params["Nx"] + 1, device=device)
@@ -71,7 +104,11 @@ class INRIGCenteredFWI:
         coords = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=1)
 
         epochs = int(cfg["epochs"])
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"], weight_decay=cfg["l2"])
+        groups = ig_parameter_groups(model, cfg)
+        optimizer = torch.optim.Adam(groups, weight_decay=cfg["l2"])
+        print("IG parameter groups: " + ", ".join(
+            f"{g['name']} lr={g['lr']:.1e} ({sum(p.numel() for p in g['params']):,} params)"
+            for g in groups), flush=True)
         lr_lambda = lambda epoch: (cfg["beta"] * epoch + 1) ** cfg["alpha"]
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         tv_weight = float(cfg.get("tv_weight", 0.0))
@@ -154,7 +191,7 @@ class INRIGCenteredFWI:
             delta_gamma = gamma_after - gamma_before
 
             costHistory[epoch] = cost.detach().cpu()
-            mseHistory[epoch] = 0.5 * torch.mean((gamma_after - target_inner) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gamma_after, target_inner)
             gammaHistory[epoch + 1] = gamma_after.detach().cpu()
 
             row = {

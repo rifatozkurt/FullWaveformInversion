@@ -1,8 +1,7 @@
 """Train U-Net and SegFormer variants from one reproducible command.
 
 Every selected model receives the same nested sample-ID prefixes at each
-requested sample count. Runs are sequential so they remain safe on a single
-4 GiB GPU.
+requested sample count. Runs are sequential.
 """
 
 import argparse

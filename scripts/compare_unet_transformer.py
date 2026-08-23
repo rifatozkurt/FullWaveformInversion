@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from src import metrics
 from src.config import load_config, save_experiment_config
 from src.experiments.transfer_learning_fwi import TransferLearningFWI
 from src.experiments.transfer_segformer_fwi import TransferSegFormerFWI
@@ -18,7 +19,10 @@ from src.pretrain_segformer import segformer_model_type
 
 
 DEFAULT_SAMPLE_COUNTS = "100,250,500,1000,5000,10000"
-DEFAULT_MODELS = "unet,segformer,segformer_highres"
+# segformer_highres is a DISCARDED experiment. Its implementation is retained so
+# old runs stay reproducible, but it is no longer part of the default comparison
+# and must be requested explicitly with --models.
+DEFAULT_MODELS = "unet,segformer"
 SUPPORTED_MODELS = ("unet", "segformer", "segformer_highres")
 MODEL_STYLES = {
     "unet": {"label": "U-Net", "color": "#2f5aa8"},
@@ -166,33 +170,17 @@ def load_output_gammas(run_dir, method, case_id):
 
 
 def gamma_metrics(final_gamma, target_gamma, void_threshold):
-    final_gamma = np.asarray(final_gamma)
-    target_gamma = np.asarray(target_gamma)
-    pred_void = final_gamma <= float(void_threshold)
-    target_void = target_gamma <= float(void_threshold)
-    tp = np.logical_and(pred_void, target_void).sum()
-    fp = np.logical_and(pred_void, ~target_void).sum()
-    fn = np.logical_and(~pred_void, target_void).sum()
-    tn = np.logical_and(~pred_void, ~target_void).sum()
-    eps = 1e-12
-    precision = tp / max(tp + fp, eps)
-    recall = tp / max(tp + fn, eps)
-    f1 = 2.0 * precision * recall / max(precision + recall, eps)
-    iou = tp / max(tp + fp + fn, eps)
-    accuracy = (tp + tn) / max(tp + fp + fn + tn, eps)
-    mae = np.mean(np.abs(final_gamma - target_gamma))
-    return {
-        "void_threshold": float(void_threshold),
-        "void_fraction_pred": float(pred_void.mean()),
-        "void_fraction_target": float(target_void.mean()),
-        "precision": float(precision),
-        "recall": float(recall),
-        "f1": float(f1),
-        "dice": float(f1),
-        "iou": float(iou),
-        "accuracy": float(accuracy),
-        "mae": float(mae),
-    }
+    """
+    Continuous and binarized metrics side by side, from the shared definitions
+    in src/metrics.py. Both arrays are already the physical interior here, so
+    no ghost ring has to be stripped.
+    """
+    return metrics.all_metrics(
+        np.asarray(final_gamma),
+        np.asarray(target_gamma),
+        ghost=0,
+        threshold=float(void_threshold),
+    )
 
 
 def write_summary(path, rows):
@@ -211,7 +199,8 @@ def aggregate_rows(rows):
         "final_mse",
         "best_mse",
         "final_cost",
-        "mae",
+        "gamma_mse",
+        "gamma_mae",
         "precision",
         "recall",
         "f1",

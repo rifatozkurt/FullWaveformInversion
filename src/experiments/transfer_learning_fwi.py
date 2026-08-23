@@ -1,3 +1,4 @@
+import copy
 import time
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -65,7 +67,7 @@ class TransferLearningFWI:
         model.to(device)
 
         forwardSolver = create_forward_solver(params, device)
-        inputData = normalize_input_data(initialGradient).to(device)
+        inputData = normalize_input_data(initialGradient, self.config).to(device)
 
         gammaPred = torch.ones(
             (1, 1, params["Nx"] + 3, params["Ny"] + 3),
@@ -83,6 +85,14 @@ class TransferLearningFWI:
         mseHistory = np.zeros(epochs)
         gammaHistory = np.zeros((epochs + 1, params["Nx"] + 1, params["Ny"] + 1))
         gammaHistory[0] = gammaPred[0, 0, 1:-1, 1:-1].cpu().detach().numpy()
+
+        # Restore-best-observed, matching transfer_segformer_fwi so the two
+        # methods are selected by the same rule. The FWI cost is not monotone,
+        # so reporting whatever the final iterate happens to be adds noise.
+        restore_best_observed = bool(cfg.get("restore_best_observed", False))
+        best_observed_cost = float("inf")
+        best_observed_epoch = -1
+        best_model_state = None
 
         start = time.perf_counter()
         for epoch in range(epochs):
@@ -124,17 +134,38 @@ class TransferLearningFWI:
             optimizer.step()
             scheduler.step()
 
-            costHistory[epoch] = cost.detach().cpu()
+            observed_cost = float(cost.detach().cpu())
+            costHistory[epoch] = observed_cost
             # Memory/transfer patch: compute MSE on-device instead of copying
             # the full predicted gamma to CPU each epoch.
-            mseHistory[epoch] = 0.5 * torch.mean((gammaPred[0] - gamma) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gammaPred, gamma, ghost=1)
             gammaHistory[epoch + 1] = gammaPred[0, 0, 1:-1, 1:-1].detach().cpu()
+
+            if observed_cost < best_observed_cost:
+                best_observed_cost = observed_cost
+                best_observed_epoch = epoch
+                if restore_best_observed:
+                    best_model_state = copy.deepcopy(model.state_dict())
 
             elapsed_time = time.perf_counter() - start
             if epoch % 2 == 0:
                 string = "Epoch: {}/{}\t\tCost function: {:.7E}\t\tMSE: {:.7E}\t\tElapsed time: {:2f}"
                 print(string.format(epoch, epochs - 1, costHistory[epoch], mseHistory[epoch], elapsed_time))
             start = time.perf_counter()
+
+        if restore_best_observed and best_model_state is not None:
+            model.load_state_dict(best_model_state)
+            model.eval()
+            with torch.no_grad():
+                restored = torch.ones(
+                    (1, 1, params["Nx"] + 3, params["Ny"] + 3),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                restored[:, :, 1:-1, 1:-1] = model(inputData)
+            gammaHistory[-1] = restored[0, 0, 1:-1, 1:-1].detach().cpu()
+            mseHistory[-1] = metrics.gamma_mse(restored, gamma, ghost=1)
+            costHistory[-1] = best_observed_cost
 
         plot_reconstruction_history(
             gammaHistory,
@@ -165,6 +196,9 @@ class TransferLearningFWI:
             run_dir=Path(run_dir),
             metadata={
                 "epochs": epochs,
+                "restore_best_observed": restore_best_observed,
+                "best_observed_cost": best_observed_cost,
+                "best_observed_epoch": best_observed_epoch + 1,
                 "pretrain_samples": sample,
                 "epochs_pretrain": epochs_pretrain,
             },

@@ -92,7 +92,8 @@ def build_model(config, method, device):
         )
     elif method == "inr_lr_fwi":
         model = INR_LR(
-            rank=int(cfg["rank"]),
+            rank_x=int(cfg.get("rank_x", cfg.get("rank", 128))),
+            rank_y=int(cfg.get("rank_y", cfg.get("rank", 64))),
             hidden_features=int(cfg["hidden_features"]),
             hidden_layers=int(cfg["hidden_layers"]),
             omega0=float(cfg.get("omega0", 30)),

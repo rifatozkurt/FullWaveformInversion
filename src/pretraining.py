@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src import io
+from src import metrics
 from src import networks as NN
 from src.experiments.base import get_device, simulation_parameters
 
@@ -154,11 +155,10 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     legacy_batch_size = max(1, numberOfSamples // int(cfg["batchDivisor"]))
     batchSize = max(1, int(cfg.get("batch_size", legacy_batch_size)))
 
-    inputData = initialGradient
-    inputData = (inputData - torch.amin(inputData, (2, 3), keepdim=True)) / (
-        torch.amax(inputData, (2, 3), keepdim=True)
-        - torch.amin(inputData, (2, 3), keepdim=True)
-    ) * 2 - 1
+    # Shared normalization -- identical to the SegFormer's, so the comparison
+    # isolates architecture rather than preprocessing. See src/networks.py.
+    normalization = dict(config.get("gradient_normalization", {}) or {})
+    inputData = NN.normalize_gradient(initialGradient, **normalization)
 
     dataset = NN.FWIDataset(inputData, gamma, device)
     datasetTraining, datasetValidation = torch.utils.data.random_split(
@@ -298,27 +298,23 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
                     dtype=torch.float32,
                 )
                 gammaPred[:, :, 1:-1, 1:-1] = gamma_interior_pred
+                # The training loss keeps its 0.5 (it mirrors the FWI misfit
+                # convention); the REPORTED gamma error does not -- see
+                # src/metrics.py for why the two were split.
                 batch_validation_cost = 0.5 * torch.mean((gammaPred - sample[1]) ** 2)
-                batch_gamma_mse = torch.mean(
-                    (gamma_interior_pred - gamma_interior_target) ** 2
-                )
                 validation_cost_sum += (
                     float(batch_validation_cost.detach().cpu()) * len(sample[0])
                 )
                 validation_gamma_mse_sum += (
-                    float(batch_gamma_mse.detach().cpu()) * len(sample[0])
+                    metrics.gamma_mse(gamma_interior_pred, gamma_interior_target)
+                    * len(sample[0])
                 )
                 validation_samples += len(sample[0])
 
-                # Express both models as a binary void segmentation for common
-                # Dice/IoU reporting. Halfway between gamma0 and one corresponds
-                # to a void-probability threshold of 0.5.
-                predicted_void = (
-                    ((1.0 - gamma_interior_pred) / max(1.0 - gamma0, 1e-8))
-                    .clamp(0.0, 1.0)
-                    >= 0.5
-                )
-                target_void = gamma_interior_target <= ((1.0 + gamma0) / 2.0)
+                # Void masks are thresholded on gamma directly, identically for
+                # every model, via the shared helper in src/metrics.py.
+                predicted_void = metrics.void_mask(gamma_interior_pred)
+                target_void = metrics.void_mask(gamma_interior_target)
                 validation_tp += float(
                     (predicted_void & target_void).sum().detach().cpu()
                 )

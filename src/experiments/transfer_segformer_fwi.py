@@ -9,6 +9,7 @@ import torch
 
 from src import adjoint
 from src import io
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -270,9 +271,7 @@ class TransferSegFormerFWI:
                 params["sely"],
                 device,
             )
-            pre_step_mse = float(
-                (0.5 * torch.mean((gamma_pred[0] - gamma) ** 2)).detach().cpu()
-            )
+            pre_step_mse = metrics.gamma_mse(gamma_pred, gamma, ghost=1)
             observed_cost = float(cost.detach().cpu())
             if observed_cost < best_observed_cost:
                 best_observed_cost = observed_cost
@@ -313,10 +312,8 @@ class TransferSegFormerFWI:
                 post_step_gamma_image = model(input_data)
                 post_step_gamma_pred = torch.ones_like(gamma_homogeneous)
                 post_step_gamma_pred[:, :, 1:-1, 1:-1] = post_step_gamma_image
-                post_step_mse = float(
-                    (0.5 * torch.mean((post_step_gamma_pred[0] - gamma) ** 2))
-                    .detach()
-                    .cpu()
+                post_step_mse = metrics.gamma_mse(
+                    post_step_gamma_pred, gamma, ghost=1
                 )
                 gamma_update = post_step_gamma_image - gamma_image.detach()
 
@@ -380,11 +377,8 @@ class TransferSegFormerFWI:
                 restored_gamma_pred = torch.ones_like(gamma_homogeneous)
                 restored_gamma_pred[:, :, 1:-1, 1:-1] = restored_gamma
             gamma_history[-1] = restored_gamma[0, 0].detach().cpu().numpy()
-            mse_history[-1] = float(
-                0.5
-                * torch.mean((restored_gamma_pred[0] - gamma) ** 2)
-                .detach()
-                .cpu()
+            mse_history[-1] = metrics.gamma_mse(
+                restored_gamma_pred, gamma, ghost=1
             )
             cost_history[-1] = best_observed_cost
 

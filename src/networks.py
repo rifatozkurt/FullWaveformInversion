@@ -139,7 +139,7 @@ class SegFormerSpec:
                 )
 
 
-def normalize_gradient_for_transformer(
+def normalize_gradient(
     gradient,
     mode="robust_abs",
     quantile=0.99,
@@ -147,8 +147,24 @@ def normalize_gradient_for_transformer(
     clamp=1.0,
 ):
     """
-    sign-preserving gradient normalization for transformer inputs.
+    Shared adjoint-gradient normalization, used by EVERY model.
 
+    Two modes:
+
+    ``robust_abs`` (default)
+        Sign-preserving division by a high quantile of |gradient|, then a
+        symmetric clamp. Preferred because an adjoint gradient carries large
+        isolated spikes at the source positions; a scale set by those spikes
+        compresses the informative bulk of the field into a narrow band.
+
+    ``minmax``
+        Per-sample affine map of [min, max] onto [-1, 1]. This is the legacy
+        U-Net convention, retained so old behaviour can be reproduced. It is
+        defined by exactly two extreme pixels and is therefore sensitive to the
+        source spikes described above.
+
+    Using one function for both architectures is what allows the U-Net vs
+    SegFormer comparison to isolate architecture rather than preprocessing.
     """
     squeeze_channel = False
     if gradient.ndim == 3:
@@ -166,12 +182,21 @@ def normalize_gradient_for_transformer(
         normalized = gradient / scale
         if clamp is not None:
             normalized = torch.clamp(normalized, -float(clamp), float(clamp))
+    elif mode == "minmax":
+        low = torch.amin(gradient, (2, 3), keepdim=True)
+        high = torch.amax(gradient, (2, 3), keepdim=True)
+        normalized = (gradient - low) / torch.clamp(high - low, min=float(eps)) * 2 - 1
     else:
-        raise ValueError(f"Unknown transformer gradient normalization mode: {mode}")
+        raise ValueError(f"Unknown gradient normalization mode: {mode}")
 
     if squeeze_channel:
         return normalized.squeeze(1)
     return normalized
+
+
+# Backwards-compatible alias: this used to be SegFormer-specific, but the same
+# normalization is now shared by every architecture.
+normalize_gradient_for_transformer = normalize_gradient
 
 
 class GradientSegFormer(torch.nn.Module):
@@ -583,17 +608,31 @@ class Unet(torch.nn.Module):
             else:
                 x = PixelNorm(x)
             x = self.activationsBottleneck[j](x)
+        # Decoder. The reference implementation (legacy/NeuralNetwork.py:174-184)
+        # normalized only the FIRST convolution of each up-block, while the
+        # encoder normalizes after every convolution. That left half of the
+        # `bnormsUp` modules constructed but never called -- dead parameters
+        # carried in every checkpoint. Normalization is now applied symmetrically
+        # with the encoder, with ONE deliberate exception: the final output
+        # convolution is left unnormalized, because its weights and bias are
+        # initialized (mean 0.7, bias 3) specifically to put the following
+        # Sigmoid deep in its saturated region so that gamma starts at intact
+        # material. A BatchNorm there would re-centre the pre-activation to zero
+        # mean and destroy that prior.
+        last_up = len(self.convolutionsUp) - 1
         for i in range(len(self.channels) - 1):
             x = self.upsample(x)
-            x = self.convolutionsUp[self.numberOfConvolutionsPerBlock * i](
-                torch.cat((x, x_[-(i + 1)]), 1)
-            )
-            if self.bnorm == True:
-                x = self.bnormsUp[self.numberOfConvolutionsPerBlock * i](x)
-            x = self.activationsUp[self.numberOfConvolutionsPerBlock * i](x)
+            index = self.numberOfConvolutionsPerBlock * i
+            x = self.convolutionsUp[index](torch.cat((x, x_[-(i + 1)]), 1))
+            if self.bnorm == True and index != last_up:
+                x = self.bnormsUp[index](x)
+            x = self.activationsUp[index](x)
             for j in range(1, self.numberOfConvolutionsPerBlock):
-                x = self.convolutionsUp[self.numberOfConvolutionsPerBlock * i + j](x)
-                x = self.activationsUp[self.numberOfConvolutionsPerBlock * i + j](x)
+                index = self.numberOfConvolutionsPerBlock * i + j
+                x = self.convolutionsUp[index](x)
+                if self.bnorm == True and index != last_up:
+                    x = self.bnormsUp[index](x)
+                x = self.activationsUp[index](x)
 
         x = x * (1 - self.gamma0) + self.gamma0
 
@@ -674,8 +713,8 @@ class INR(torch.nn.Module):
         hidden_features,
         hidden_layers,
         gamma0,
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
     ):
         super().__init__()
         self.gamma0 = gamma0
@@ -696,15 +735,26 @@ class INR(torch.nn.Module):
             self.final_layer.bias.fill_(self.final_bias)
 
     def gamma_from_raw(self, raw):
-        if self.output_mode == "voidness":
-            # The INR predicts voidness logits, not gamma directly.
-            # p_void = sigmoid(raw) is the local probability/strength of damage.
-            # gamma = 1 - (1 - gamma_min) * p_void keeps intact material as the
-            # default state when final_bias is negative.
-            p_void = torch.sigmoid(raw)
-            return 1.0 - (1.0 - self.gamma0) * p_void
+        """
+        Map raw network output to the indicator gamma in [gamma0, 1].
+
+        The two modes are the SAME MODEL: since sigmoid(-r) = 1 - sigmoid(r),
+
+            voidness(raw) == direct_gamma(-raw)
+
+        exactly (verified numerically to float precision). They differ only by
+        negating the final layer's weights and bias, so `voidness` adds no
+        capacity. `direct_gamma` is the default because it is the convention
+        published by Singh et al. (Comput. Mech. 76, 2025) and Herrmann et al.
+        (CMAME 415, 2023), where a positive final bias (+3) makes the network
+        start at intact material. `voidness` is retained only so that older
+        checkpoints remain loadable.
+        """
         if self.output_mode == "direct_gamma":
             return self.gamma0 + (1.0 - self.gamma0) * torch.sigmoid(raw)
+        if self.output_mode == "voidness":
+            p_void = torch.sigmoid(raw)
+            return 1.0 - (1.0 - self.gamma0) * p_void
         raise ValueError(f"Unknown INR output_mode: {self.output_mode}")
 
     def forward(self, coords):
@@ -719,8 +769,8 @@ class INRSIREN(torch.nn.Module):
         hidden_layers,
         gamma0,
         omega0=30,
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
     ):
         super().__init__()
         self.gamma0 = gamma0
@@ -774,7 +824,7 @@ class INRSIREN_CENTERED(INRSIREN):
     """
 
     def __init__(self, *args, **kwargs):
-        final_bias = kwargs.get("final_bias", -5.0)
+        final_bias = kwargs.get("final_bias", 3.0)
         if len(args) >= 6:
             final_bias = args[5]
         super().__init__(*args, **kwargs)
@@ -798,26 +848,42 @@ class INR_LR(torch.nn.Module):
     """
     Low-rank INR material-field parametrization for LR-FWI.
     this model uses two axis-wise SIREN networks:
-        x -> F_x(x) in R^rank
-        y -> F_y(y) in R^rank
-    and a trainable core matrix C:
+        x -> F_x(x) in R^rank_x
+        y -> F_y(y) in R^rank_y
+    and a trainable core matrix C of shape [rank_x, rank_y]:
         raw(x, y) = F_x(x)^T * C * F_y(y) + final_bias
+
+    The two ranks are independent, following Chen et al. (LR-IFWI, IEEE TGRS
+    2025), who set r1 = 50 and r2 = 100 throughout their experiments, and Chen
+    et al. (ICLR 2026) App. B.1, which sets the rank to "half of the model
+    dimension" -- both of which give a RECTANGULAR core on a non-square domain.
+    Passing a single `rank` keeps the old square behaviour.
     """
 
     def __init__(
         self,
-        rank,
-        hidden_features,
-        hidden_layers,
-        gamma0,
+        rank=None,
+        hidden_features=128,
+        hidden_layers=3,
+        gamma0=1e-5,
         omega0=30,
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
         core_init_std=1e-3,
+        rank_x=None,
+        rank_y=None,
     ):
         super().__init__()
 
-        self.rank = rank
+        if rank_x is None or rank_y is None:
+            if rank is None:
+                raise ValueError("INR_LR needs either `rank` or both `rank_x` and `rank_y`")
+            rank_x = int(rank_x if rank_x is not None else rank)
+            rank_y = int(rank_y if rank_y is not None else rank)
+        self.rank_x = int(rank_x)
+        self.rank_y = int(rank_y)
+        # Kept for checkpoint/back-compat reporting; only meaningful when square.
+        self.rank = self.rank_x
         self.hidden_features = hidden_features
         self.hidden_layers = hidden_layers
         self.gamma0 = gamma0
@@ -833,34 +899,52 @@ class INR_LR(torch.nn.Module):
         for _ in range(hidden_layers):
             self.x_layers.append(torch.nn.Linear(in_features, hidden_features))
             in_features = hidden_features
-        self.x_layers.append(torch.nn.Linear(in_features, rank))
+        self.x_layers.append(torch.nn.Linear(in_features, self.rank_x))
 
         # y network: input dimension 1
         in_features = 1
         for _ in range(hidden_layers):
             self.y_layers.append(torch.nn.Linear(in_features, hidden_features))
             in_features = hidden_features
-        self.y_layers.append(torch.nn.Linear(in_features, rank))
+        self.y_layers.append(torch.nn.Linear(in_features, self.rank_y))
 
-        # Trainable low-rank core matrix C.
-        self.core = torch.nn.Parameter(torch.empty(rank, rank))  # [rank, rank]
+        # Trainable low-rank core matrix C, [rank_x, rank_y].
+        self.core = torch.nn.Parameter(torch.empty(self.rank_x, self.rank_y))
 
-        # Trainable scalar bias added to raw voidness logits.
-        # !!! Initialized negative so that gamma initializes around 1
+        # Trainable scalar bias added to the raw logits, so that gamma starts
+        # at intact material.
         self.raw_bias = torch.nn.Parameter(torch.tensor(float(final_bias)))
 
         self.init_siren_weights(core_init_std=core_init_std)
 
     def init_siren_stack(self, layers):
-    
+        """
+        SIREN initialization for the axis networks.
+
+        IMPORTANT: SIREN's sqrt(6/fan_in)/omega0 bound is DERIVED for layers
+        whose output is consumed by sin(omega0 * .) -- the /omega0 exists purely
+        to cancel the omega0 inside the sine. The FINAL layer of each axis
+        network is linear and feeds the bilinear core product, NOT a sine, so
+        that division does not apply to it. Including it (as an earlier version
+        of this class did) shrinks both factor matrices by omega0 = 30, which
+        leaves the pre-activation field with a standard deviation of ~5e-5 at
+        initialization -- effectively constant -- against a target that needs a
+        swing of ~10 in logit space. The model then never moves at all.
+        """
         with torch.no_grad():
             first_fan_in = layers[0].weight.shape[1]
             layers[0].weight.uniform_(-1 / first_fan_in, 1 / first_fan_in)
 
-            for layer in layers[1:]:
+            # sine-activated hidden layers: standard SIREN bound
+            for layer in layers[1:-1]:
                 fan_in = layer.weight.shape[1]
                 bound = np.sqrt(6 / fan_in) / self.omega0
                 layer.weight.uniform_(-bound, bound)
+
+            # linear feature layer feeding the bilinear form: no omega0 division
+            fan_in = layers[-1].weight.shape[1]
+            bound = np.sqrt(6 / fan_in)
+            layers[-1].weight.uniform_(-bound, bound)
 
     def init_siren_weights(self, core_init_std=1e-3):
         
@@ -935,11 +1019,12 @@ class INR_MPE(torch.nn.Module):
         features_per_level=2,
         hidden_features=64,
         hidden_layers=2,
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
         grid_init_std=1e-4,
         align_corners=True,
         swap_grid_coords=False,
+        grid_aspect=1.0,
     ):
         super().__init__()
 
@@ -955,6 +1040,7 @@ class INR_MPE(torch.nn.Module):
         self.grid_init_std = grid_init_std
         self.align_corners = align_corners
         self.swap_grid_coords = swap_grid_coords
+        self.grid_aspect = float(grid_aspect)
 
         # Compute grid resolution for each level.
         # Paper settings: 16 levels, base resolution 50, per-level scale 1.05.
@@ -967,12 +1053,13 @@ class INR_MPE(torch.nn.Module):
         #     [1, features_per_level, H, W]
         self.grids = torch.nn.ParameterList()
         for res in self.resolutions:
+            height, width = self._grid_shape(res)
             grid = torch.nn.Parameter(
                 grid_init_std * torch.randn(
                     1,
                     features_per_level,
-                    res,
-                    res,
+                    height,
+                    width,
                 )
             )
             self.grids.append(grid)
@@ -1011,6 +1098,22 @@ class INR_MPE(torch.nn.Module):
             # Small final weights help avoid random patterns
             final_layer.weight.normal_(0.0, 1e-3)
             final_layer.bias.fill_(self.final_bias)
+
+    def _grid_shape(self, res):
+        """
+        Feature-grid (H, W) for a level of nominal resolution `res`.
+
+        `F.grid_sample` maps coords[..., 0] to the W axis and coords[..., 1] to
+        the H axis, so W tracks the first spatial coordinate and H the second.
+        The simulation domain is not square (256 x 128), so allocating res x res
+        grids -- as an earlier version did -- gave the two axes effective
+        resolutions differing by the domain aspect ratio. `grid_aspect` is
+        H/W; set it to (Ny+1)/(Nx+1) to keep the feature cells square. It
+        defaults to 1.0, which reproduces the old square behaviour.
+        """
+        width = max(1, int(res))
+        height = max(1, int(round(res * self.grid_aspect)))
+        return height, width
 
     def sample_grid_features(self, coords):
         """
@@ -1083,11 +1186,12 @@ class INR_MPE_CENTERED(torch.nn.Module):
         features_per_level=2,
         hidden_features=64,
         hidden_layers=2,
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
         grid_init_std=1e-2,
         align_corners=True,
         swap_grid_coords=False,
+        grid_aspect=1.0,
     ):
         super().__init__()
 
@@ -1102,6 +1206,7 @@ class INR_MPE_CENTERED(torch.nn.Module):
         self.grid_init_std = grid_init_std
         self.align_corners = align_corners
         self.swap_grid_coords = swap_grid_coords
+        self.grid_aspect = float(grid_aspect)
 
         # Non-trainable final bias that sets the intact-material base logit.
         self.register_buffer("final_bias", torch.tensor(float(final_bias)))
@@ -1117,12 +1222,13 @@ class INR_MPE_CENTERED(torch.nn.Module):
         #     [1, features_per_level, H, W]
         self.grids = torch.nn.ParameterList()
         for res in self.resolutions:
+            height, width = self._grid_shape(res)
             grid = torch.nn.Parameter(
                 grid_init_std * torch.randn(
                     1,
                     features_per_level,
-                    res,
-                    res,
+                    height,
+                    width,
                 )
             )
             self.grids.append(grid)
@@ -1159,6 +1265,22 @@ class INR_MPE_CENTERED(torch.nn.Module):
             # final_bias supplies the base level; this layer predicts residuals.
             final_layer.weight.normal_(0.0, 1e-3)
             final_layer.bias.zero_()
+
+    def _grid_shape(self, res):
+        """
+        Feature-grid (H, W) for a level of nominal resolution `res`.
+
+        `F.grid_sample` maps coords[..., 0] to the W axis and coords[..., 1] to
+        the H axis, so W tracks the first spatial coordinate and H the second.
+        The simulation domain is not square (256 x 128), so allocating res x res
+        grids -- as an earlier version did -- gave the two axes effective
+        resolutions differing by the domain aspect ratio. `grid_aspect` is
+        H/W; set it to (Ny+1)/(Nx+1) to keep the feature cells square. It
+        defaults to 1.0, which reproduces the old square behaviour.
+        """
+        width = max(1, int(res))
+        height = max(1, int(round(res * self.grid_aspect)))
+        return height, width
 
     def sample_grid_features(self, coords):
         """
@@ -1246,6 +1368,7 @@ class INR_IG(torch.nn.Module):
         grid_init_std=1e-4,
         align_corners=True,
         swap_grid_coords=False,
+        grid_aspect=1.0,
         # SIREN feature branch
         siren_hidden_features=128,
         siren_hidden_layers=2,
@@ -1255,8 +1378,21 @@ class INR_IG(torch.nn.Module):
         fusion_hidden_features=64,
         fusion_hidden_layers=2,
         # Output
-        output_mode="voidness",
-        final_bias=-5.0,
+        output_mode="direct_gamma",
+        final_bias=3.0,
+        # Std of the fusion MLP's final-layer weights. This is the single lever
+        # controlling how much gradient reaches the grid and SIREN branches:
+        # d(raw)/d(branch feature) is linear in it. The original 1e-3 keeps the
+        # initial output pinned to final_bias, but starves both branches --
+        # measured grid-branch gradients fell to 3.4e-10, below Adam's eps.
+        fusion_init_std=1e-3,
+        # Rescale the fused feature vector to unit RMS before the fusion MLP.
+        # Without it the MLP receives features of RMS ~0.06 and, after three
+        # layers of default-scaled weights, emits `raw` with a standard deviation
+        # of ~4e-3 -- so gamma varies by ~1e-4 against a target that varies by
+        # ~1e-1. The model then starts as a near-constant field and cannot move.
+        # This is the same failure mode as INR_LR's mis-transplanted init.
+        feature_norm=False,
     ):
         super().__init__()
 
@@ -1273,6 +1409,7 @@ class INR_IG(torch.nn.Module):
         self.grid_init_std = grid_init_std
         self.align_corners = align_corners
         self.swap_grid_coords = swap_grid_coords
+        self.grid_aspect = float(grid_aspect)
 
         self.siren_hidden_features = siren_hidden_features
         self.siren_hidden_layers = siren_hidden_layers
@@ -1284,6 +1421,8 @@ class INR_IG(torch.nn.Module):
 
         self.output_mode = output_mode
         self.final_bias = final_bias
+        self.fusion_init_std = float(fusion_init_std)
+        self.feature_norm = bool(feature_norm)
 
         # ------------------------------------------------------------
         # MPE branch
@@ -1295,12 +1434,13 @@ class INR_IG(torch.nn.Module):
 
         self.grids = torch.nn.ParameterList()
         for res in self.resolutions:
+            height, width = self._grid_shape(res)
             grid = torch.nn.Parameter(
                 grid_init_std * torch.randn(
                     1,
                     features_per_level,
-                    res,
-                    res,
+                    height,
+                    width,
                 )
             )
             self.grids.append(grid)
@@ -1378,12 +1518,28 @@ class INR_IG(torch.nn.Module):
             # This prevents random grid/SIREN features from producing
             # strong random void patterns at epoch 0, while still allowing
             # immediate gradients to reach both feature branches.
-            final_layer.weight.normal_(0.0, 1e-3)
+            final_layer.weight.normal_(0.0, self.fusion_init_std)
             final_layer.bias.fill_(self.final_bias)
 
     def init_weights(self):
         self.init_siren_stack()
         self.init_fusion_final_layer()
+
+    def _grid_shape(self, res):
+        """
+        Feature-grid (H, W) for a level of nominal resolution `res`.
+
+        `F.grid_sample` maps coords[..., 0] to the W axis and coords[..., 1] to
+        the H axis, so W tracks the first spatial coordinate and H the second.
+        The simulation domain is not square (256 x 128), so allocating res x res
+        grids -- as an earlier version did -- gave the two axes effective
+        resolutions differing by the domain aspect ratio. `grid_aspect` is
+        H/W; set it to (Ny+1)/(Nx+1) to keep the feature cells square. It
+        defaults to 1.0, which reproduces the old square behaviour.
+        """
+        width = max(1, int(res))
+        height = max(1, int(round(res * self.grid_aspect)))
+        return height, width
 
     def sample_grid_features(self, coords):
         if coords.ndim != 2 or coords.shape[-1] != 2:
@@ -1419,6 +1575,13 @@ class INR_IG(torch.nn.Module):
             features.append(sampled)
 
         return torch.cat(features, dim=-1)
+
+    def normalize_features(self, features):
+        """Scale the fused feature vector to unit RMS (no learnable parameters)."""
+        if not self.feature_norm:
+            return features
+        rms = features.pow(2).mean(dim=-1, keepdim=True).sqrt()
+        return features / torch.clamp(rms, min=1e-8)
 
     def siren_features(self, coords):
         x = coords
@@ -1456,6 +1619,7 @@ class INR_IG(torch.nn.Module):
             ],
             dim=-1,
         )
+        combined = self.normalize_features(combined)
 
         raw = self.fusion_mlp(combined)
 
@@ -1469,7 +1633,7 @@ class INR_IG_CENTERED(INR_IG):
     """
 
     def __init__(self, *args, **kwargs):
-        final_bias = kwargs.get("final_bias", -5.0)
+        final_bias = kwargs.get("final_bias", 3.0)
         super().__init__(*args, **kwargs)
         del self.final_bias
         self.register_buffer("final_bias", torch.tensor(float(final_bias)))
@@ -1488,7 +1652,7 @@ class INR_IG_CENTERED(INR_IG):
 
         with torch.no_grad():
             # final_bias supplies the base level; this layer predicts residuals.
-            final_layer.weight.normal_(0.0, 1e-3)
+            final_layer.weight.normal_(0.0, self.fusion_init_std)
             final_layer.bias.zero_()
 
     def forward(self, coords):
@@ -1504,6 +1668,7 @@ class INR_IG_CENTERED(INR_IG):
             dim=-1,
         )
 
+        combined = self.normalize_features(combined)
         residual = self.fusion_mlp(combined)
         residual = residual - residual.mean(dim=0, keepdim=True)
         raw = self.final_bias + residual

@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from src import adjoint
+from src import metrics
 from src import networks as NN
 from src.experiments.base import (
     ExperimentResult,
@@ -116,7 +117,7 @@ class NNBasedFWI:
             costHistory[epoch] = cost.detach().cpu()
             # Memory/transfer patch: compute MSE on-device instead of moving
             # the reference gamma to the device every epoch.
-            mseHistory[epoch] = 0.5 * torch.mean((gammaPred[0] - gamma) ** 2).detach().cpu()
+            mseHistory[epoch] = metrics.gamma_mse(gammaPred, gamma, ghost=1)
             gammaHistory[epoch + 1] = gammaPred[0, 0, 1:-1, 1:-1].detach().cpu()
 
             elapsed_time = time.perf_counter() - start
