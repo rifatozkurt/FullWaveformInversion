@@ -213,41 +213,6 @@ def plot_metric_bars(path, rows, group_key, metrics_to_plot):
     return path
 
 
-def plot_scaling_curve(path, rows, x_key, y_key, group_key,
-                       xlabel, ylabel, title, logx=True, logy=False):
-    """
-    Metric vs pretraining-set size, one line per model family -- the figure the
-    data-efficiency claim rests on. Error bars are the spread across eval cases.
-    """
-    if not rows:
-        return None
-    fig, axis = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    groups = list(dict.fromkeys(r[group_key] for r in rows))
-    for index, name in enumerate(groups):
-        subset = [r for r in rows if r[group_key] == name]
-        xs = sorted({float(r[x_key]) for r in subset})
-        means, errors = [], []
-        for x in xs:
-            values = np.array([float(r[y_key]) for r in subset
-                               if float(r[x_key]) == x], dtype=float)
-            means.append(values.mean())
-            errors.append(values.std(ddof=1) if len(values) > 1 else 0.0)
-        axis.errorbar(xs, means, yerr=errors, marker="o", capsize=4, linewidth=2.1,
-                      color=colour_of(name, index), label=label_of(name))
-    if logx:
-        axis.set_xscale("log")
-    if logy:
-        axis.set_yscale("log")
-    axis.set_xlabel(xlabel)
-    axis.set_ylabel(ylabel)
-    axis.set_title(title)
-    axis.grid(alpha=0.3, which="both")
-    axis.legend(fontsize=9)
-    fig.savefig(path, dpi=170)
-    plt.close(fig)
-    return path
-
-
 def plot_pretraining_curves(path, curves, ylabel, title, logy=True):
     """Training/validation curves for every pretrained model, grouped by family."""
     if not curves:

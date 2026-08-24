@@ -22,6 +22,7 @@ import yaml
 from src import io
 from src.config import load_config
 from src.pretraining import pretrain_unet
+from src.reporting import plot_pretraining_curves
 from src.pretrain_segformer import (
     checkpoint_path_for_metric,
     parse_early_stopping_patience,
@@ -344,6 +345,21 @@ def refresh_comparative_outputs(root_run_dir, summary_rows, histories):
         ylabel="Validation Dice Score",
         title="Common Validation Dice Score Histories",
     )
+    # One panel PER FAMILY with a colour gradient over sample sizes.
+    # plot_common_histories puts every (model, size) pair on a single axis --
+    # 3 families x 6 sizes is 18 lines and an 18-entry legend, which is not
+    # readable. This shows how each family's curve shifts as data grows.
+    for metric, ylabel, log in (("gamma_mse", "validation gamma MSE", True),
+                                ("dice", "validation Dice", False)):
+        plot_pretraining_curves(
+            Path(root_run_dir) / "figures" / f"pretraining_{metric}_by_family.png",
+            [{"family": h["model"], "samples": h["samples"], "values": h[metric]}
+             for h in histories if metric in h],
+            ylabel=ylabel,
+            title=f"Pretraining {ylabel} by model family and training-set size",
+            logy=log,
+        )
+
     plot_native_histories(
         Path(root_run_dir)
         / "figures"
