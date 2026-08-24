@@ -727,30 +727,33 @@ class Unet(torch.nn.Module):
             else:
                 x = PixelNorm(x)
             x = self.activationsBottleneck[j](x)
-        # Decoder. The reference implementation (legacy/NeuralNetwork.py:174-184)
-        # normalized only the FIRST convolution of each up-block, while the
-        # encoder normalizes after every convolution. That left half of the
-        # `bnormsUp` modules constructed but never called -- dead parameters
-        # carried in every checkpoint. Normalization is now applied symmetrically
-        # with the encoder, with ONE deliberate exception: the final output
-        # convolution is left unnormalized, because its weights and bias are
-        # initialized (mean 0.7, bias 3) specifically to put the following
-        # Sigmoid deep in its saturated region so that gamma starts at intact
-        # material. A BatchNorm there would re-centre the pre-activation to zero
-        # mean and destroy that prior.
-        last_up = len(self.convolutionsUp) - 1
+        # Decoder. Normalization is applied ONLY after the first convolution of
+        # each up-block, matching the reference implementation
+        # (legacy/NeuralNetwork.py:174-184). The encoder normalizes after every
+        # convolution, so this is asymmetric, and the remaining `bnormsUp`
+        # modules are constructed but never called.
+        #
+        # DO NOT "FIX" THIS. It looks like an oversight and is not. Normalizing
+        # every decoder convolution was tried and measured: training loss is
+        # unaffected (0.00077 vs 0.00081) but VALIDATION loss in eval() mode
+        # degrades 19x (0.179 vs 0.0093), and predicted gamma collapses to a mean
+        # of 0.46 against a target of ~0.99 -- i.e. the network predicts void
+        # almost everywhere as soon as BatchNorm switches from batch statistics
+        # to running statistics. The extra decoder BatchNorms sit on activations
+        # whose per-batch distribution is too unstable for a running average to
+        # represent, so train and eval behaviour diverge catastrophically.
+        # Symptom to recognise: training loss near zero while validation loss
+        # pins near its maximum (0.5 for this objective) and oscillates.
         for i in range(len(self.channels) - 1):
             x = self.upsample(x)
             index = self.numberOfConvolutionsPerBlock * i
             x = self.convolutionsUp[index](torch.cat((x, x_[-(i + 1)]), 1))
-            if self.bnorm == True and index != last_up:
+            if self.bnorm == True:
                 x = self.bnormsUp[index](x)
             x = self.activationsUp[index](x)
             for j in range(1, self.numberOfConvolutionsPerBlock):
                 index = self.numberOfConvolutionsPerBlock * i + j
                 x = self.convolutionsUp[index](x)
-                if self.bnorm == True and index != last_up:
-                    x = self.bnormsUp[index](x)
                 x = self.activationsUp[index](x)
 
         x = x * (1 - self.gamma0) + self.gamma0
