@@ -330,7 +330,13 @@ experiments:
     lr: 5.0e-04
     alpha: -0.5
     beta: 0.2
-    epochs: 5
+    # 15, matching transfer_learning_fwi and transfer_segformer_fwi.
+    # At 5 epochs most configurations barely move off the trivial
+    # solution, so the four freeze modes would land within noise of
+    # each other -- and encoder vs random_encoder is exactly the
+    # comparison this ablation needs to resolve. Matching the other
+    # transfer experiments also makes the numbers directly comparable.
+    epochs: 15
     clipGrad: 5.0e-05
     l2: 1.0e-06
     costScaling: 1.0e+10
