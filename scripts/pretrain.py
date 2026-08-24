@@ -10,17 +10,29 @@ from src.pretraining import pretrain_unet
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
+    parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--run-dir", default=None,
+                        help="Exact directory. Without it a timestamped one is created.")
+    parser.add_argument("--samples", type=int, default=None,
+                        help="Override pretraining.numberOfSamples.")
     args = parser.parse_args()
     config = load_config(args.config)
-    run_dir = io.create_run_dir(
-        io.ensure_dir(config["paths"].get("runs", "runs")) / "pretraining",
-        prefix="pretraining",
+    if args.samples is not None:
+        config["pretraining"]["numberOfSamples"] = int(args.samples)
+    run_dir = (
+        io.ensure_dir(args.run_dir) if args.run_dir
+        else io.create_run_dir(
+            io.ensure_dir(config["paths"].get("runs", "runs")) / "pretraining",
+            prefix="pretraining",
+        )
     )
     io.ensure_dirs([run_dir / "figures", run_dir / "histories", run_dir / "outputs"])
     shutil.copy2(args.config, run_dir / "config.yaml")
     start = time.perf_counter()
-    model_path = pretrain_unet(config, run_dir=run_dir)
+    model_path = pretrain_unet(config, data_dir=args.data_dir,
+                               output_dir=args.output_dir, run_dir=run_dir)
     elapsed = time.perf_counter() - start
     (run_dir / "runtime.txt").write_text(
         "run_type: pretraining\nmodel_path: {}\nruntime_seconds: {:.6f}\n".format(

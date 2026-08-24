@@ -79,6 +79,10 @@ class SegFormerSpec:
     drop_path_rate: float = 0.0
     decoder_norm: str = "batch"
     decoder_norm_groups: int = 8
+    # "sdpa" is faster and is the default for training. Attention maps
+    # CANNOT be extracted under it -- `output_attentions=True` silently
+    # returns an empty tuple. Set "eager" for interpretability runs.
+    attn_implementation: str = "sdpa"
 
     @classmethod
     def from_dict(cls, values):
@@ -237,6 +241,7 @@ class GradientSegFormer(torch.nn.Module):
             attention_probs_dropout_prob=float(self.spec.attention_probs_dropout_prob),
             classifier_dropout_prob=float(self.spec.classifier_dropout_prob),
             drop_path_rate=float(self.spec.drop_path_rate),
+            attn_implementation=str(self.spec.attn_implementation),
         )
         self.segformer = SegformerForSemanticSegmentation(config)
         if self.spec.decoder_norm == "batch_no_running":
@@ -288,6 +293,119 @@ class GradientSegFormer(torch.nn.Module):
     def forward(self, gradient_input):
         p_void = self.forward_voidness(gradient_input)
         return 1.0 - (1.0 - self.gamma_min) * p_void
+
+    def forward_attentions(self, gradient_input):
+        """
+        Return (logits, attentions) for interpretability.
+
+        Requires the model to have been built with
+        ``attn_implementation="eager"``; under the default "sdpa" backend
+        PyTorch's fused kernel never materializes the attention matrix and
+        `output_attentions=True` returns an EMPTY tuple rather than raising, so
+        this raises instead of silently handing back nothing.
+
+        One tensor per transformer block, shaped
+        ``[batch, heads, queries, keys]``. The query axis reshapes to the
+        stage's spatial grid; the key axis is spatially reduced by that stage's
+        SR ratio (PVT-style), so key-side maps are coarse -- these are not the
+        dense per-pixel maps typical of plain ViT.
+        """
+        output = self.segformer(pixel_values=gradient_input, output_attentions=True)
+        attentions = output.attentions
+        if not attentions:
+            raise RuntimeError(
+                "No attention maps returned. Rebuild the model with "
+                "attn_implementation='eager' (the 'sdpa' default cannot expose them)."
+            )
+        return output.logits, attentions
+
+    def attention_query_shapes(self, height, width):
+        """Spatial (H, W) of the query grid for each transformer block."""
+        shapes = []
+        h, w = height, width
+        for stage, depth in enumerate(self.spec.depths):
+            h = max(1, h // self.spec.strides[stage])
+            w = max(1, w // self.spec.strides[stage])
+            shapes.extend([(h, w)] * int(depth))
+        return shapes
+
+
+MIT_B0_HIDDEN_SIZES = (32, 64, 160, 256)
+MIT_B0_NUM_ATTENTION_HEADS = (1, 2, 5, 8)
+DEFAULT_IMAGENET_REPO = "nvidia/mit-b0"
+
+
+def load_imagenet_encoder(model, repo_id=DEFAULT_IMAGENET_REPO, verbose=True):
+    """
+    Transplant the ImageNet-1k MiT-B0 encoder into a GradientSegFormer.
+
+    `SegformerModel` is the encoder alone, so nothing from the classification
+    head is pulled in and the decode head keeps the initialization
+    `GradientSegFormer.__init__` gave it (the `nvidia/mit-b0` checkpoint has no
+    decode head at all -- its only classifier is a 1000-way ImageNet head at a
+    different module path).
+
+    No state-dict key is hardcoded: transformers 4.x and 5.x use different module
+    paths (`encoder.patch_embeddings.0` vs `stages.0.patch_embeddings`), but
+    `from_pretrained` normalises the checkpoint to whichever layout is installed,
+    so source and target key sets match exactly. The only tensor that then
+    differs is the 3-channel RGB stem, which is identified BY SHAPE and collapsed
+    to one channel by summing over the colour axis -- preserving the filters'
+    response magnitude for a single-channel input.
+
+    Raises rather than warning if the transfer is incomplete: a silently
+    half-initialised encoder looks exactly like "pretraining did not help".
+    """
+    try:
+        from transformers import SegformerModel
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("ImageNet initialization requires the 'transformers' package.") from exc
+
+    source_state = SegformerModel.from_pretrained(repo_id).state_dict()
+    target_encoder = model.segformer.segformer
+    target_state = target_encoder.state_dict()
+
+    unknown = sorted(set(source_state) - set(target_state))
+    if unknown:
+        raise RuntimeError(
+            f"{repo_id} has {len(unknown)} tensor(s) this architecture does not: "
+            f"{unknown[:5]}. The encoder widths must be exactly "
+            f"{list(MIT_B0_HIDDEN_SIZES)} with heads {list(MIT_B0_NUM_ATTENTION_HEADS)}."
+        )
+
+    adapted, stem_keys = {}, []
+    for key, value in source_state.items():
+        expected = target_state[key]
+        if value.shape == expected.shape:
+            adapted[key] = value
+        elif (value.ndim == 4 and expected.ndim == 4 and expected.shape[1] == 1
+              and value.shape[0] == expected.shape[0]
+              and value.shape[2:] == expected.shape[2:]):
+            adapted[key] = value.sum(dim=1, keepdim=True)
+            stem_keys.append(key)
+        else:
+            raise ValueError(
+                f"Cannot adapt {key}: checkpoint {tuple(value.shape)} vs model "
+                f"{tuple(expected.shape)}. Widths must match MiT-B0 exactly."
+            )
+
+    missing, unexpected = target_encoder.load_state_dict(adapted, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            "ImageNet encoder transfer incomplete -- refusing to continue. "
+            f"missing: {len(missing)} {list(missing)[:5]}; "
+            f"unexpected: {len(unexpected)} {list(unexpected)[:5]}"
+        )
+
+    transferred = sum(v.numel() for v in adapted.values())
+    if verbose:
+        print(f"ImageNet transfer OK: {len(adapted)} encoder tensors "
+              f"({transferred:,} parameters) from {repo_id}; "
+              f"RGB stem summed to 1 channel; decode head left at its own init.",
+              flush=True)
+    return {"repo_id": repo_id, "tensors_transferred": len(adapted),
+            "parameters_transferred": int(transferred),
+            "stem_adaptation": "sum_rgb_to_1ch" if stem_keys else "none"}
 
 
 class GradientSegFormerHighResolution(torch.nn.Module):
@@ -356,6 +474,7 @@ class GradientSegFormerHighResolution(torch.nn.Module):
             ),
             classifier_dropout_prob=float(self.spec.classifier_dropout_prob),
             drop_path_rate=float(self.spec.drop_path_rate),
+            attn_implementation=str(self.spec.attn_implementation),
         )
         self.segformer = SegformerForSemanticSegmentation(config)
         if self.spec.decoder_norm == "batch_no_running":
@@ -821,15 +940,42 @@ class INRSIREN_CENTERED(INRSIREN):
     """
     SIREN-INR with centered residual logits.
     Difference from INRSIREN: raw = final_bias + (final_layer(features) - mean(final_layer(features))).
+
+    The centring mean
+    -----------------
+    `raw = final_bias + (residual - mean(residual))` pins ``mean(raw)`` to
+    ``final_bias`` exactly. With ``learnable_bias=False`` (the original
+    behaviour, kept as the default so old runs reproduce) that mean is a buffer
+    the optimizer never touches, so the model can never reach a different mean
+    however long it trains.
+
+    That matters: for a ~1% void fraction the target's natural logit mean is
+    ~8, so a bias pinned at 3.0 leaves mean(gamma) stuck near 0.95 against a
+    target of 0.99. Measured on a supervised fit of case 1 (400 steps):
+
+        centred, bias 3.0 fixed      MSE 1.54e-03   mean(gamma) 0.9488
+        centred, bias 8.1 fixed      MSE 2.98e-07   mean(gamma) 0.9894
+        centred, bias learnable      MSE 9.73e-07   mean(gamma) 0.9890
+        uncentred (control)          MSE 2.34e-06   mean(gamma) 0.9897
+
+    So centring genuinely helps -- roughly 2-8x better than uncentred -- but only
+    once the mean is free to move. Set ``learnable_bias=True`` and give the bias
+    its own, much larger learning rate: it is a single scalar shared by every
+    sample point, so at the network's learning rate it barely moves (3.0 -> 3.34
+    in 400 steps, still far from the ~8 it needs).
     """
 
     def __init__(self, *args, **kwargs):
         final_bias = kwargs.get("final_bias", 3.0)
+        learnable_bias = kwargs.pop("learnable_bias", False)
         if len(args) >= 6:
             final_bias = args[5]
         super().__init__(*args, **kwargs)
         del self.final_bias
-        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+        if learnable_bias:
+            self.final_bias = torch.nn.Parameter(torch.tensor(float(final_bias)))
+        else:
+            self.register_buffer("final_bias", torch.tensor(float(final_bias)))
 
         with torch.no_grad():
             self.layers[-1].bias.zero_()
@@ -1192,6 +1338,7 @@ class INR_MPE_CENTERED(torch.nn.Module):
         align_corners=True,
         swap_grid_coords=False,
         grid_aspect=1.0,
+        learnable_bias=False,
     ):
         super().__init__()
 
@@ -1208,8 +1355,12 @@ class INR_MPE_CENTERED(torch.nn.Module):
         self.swap_grid_coords = swap_grid_coords
         self.grid_aspect = float(grid_aspect)
 
-        # Non-trainable final bias that sets the intact-material base logit.
-        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+        # Base logit for intact material. Fixed by default; see the class
+        # docstring of INRSIREN_CENTERED for why `learnable_bias=True` matters.
+        if learnable_bias:
+            self.final_bias = torch.nn.Parameter(torch.tensor(float(final_bias)))
+        else:
+            self.register_buffer("final_bias", torch.tensor(float(final_bias)))
 
         # Compute grid resolution for each level.
         # Paper settings: 16 levels, base resolution 50, per-level scale 1.05.
@@ -1634,9 +1785,13 @@ class INR_IG_CENTERED(INR_IG):
 
     def __init__(self, *args, **kwargs):
         final_bias = kwargs.get("final_bias", 3.0)
+        learnable_bias = kwargs.pop("learnable_bias", False)
         super().__init__(*args, **kwargs)
         del self.final_bias
-        self.register_buffer("final_bias", torch.tensor(float(final_bias)))
+        if learnable_bias:
+            self.final_bias = torch.nn.Parameter(torch.tensor(float(final_bias)))
+        else:
+            self.register_buffer("final_bias", torch.tensor(float(final_bias)))
 
     def init_fusion_final_layer(self):
         """Initialize final fusion layer for residual-logit prediction."""

@@ -10,7 +10,7 @@ from src.pretrain_segformer import pretrain_segformer
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

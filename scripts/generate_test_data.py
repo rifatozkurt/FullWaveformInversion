@@ -7,7 +7,7 @@ from src.data_generation import generate_dataset
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     args = parser.parse_args()
     generate_dataset(load_config(args.config), split="test")
 

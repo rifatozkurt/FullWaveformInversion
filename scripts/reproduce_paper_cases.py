@@ -18,7 +18,7 @@ PAPER_EXPERIMENTS = [
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", action="append", type=int)
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     args = parser.parse_args()
 
     config_path = Path(args.config)

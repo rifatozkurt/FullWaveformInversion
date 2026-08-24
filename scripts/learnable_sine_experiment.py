@@ -195,7 +195,7 @@ def main():
         description="Learn Fourier/sine coefficients for one gamma image with gradient descent."
     )
     parser.add_argument("--case", type=int, default=1)
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--frequency-cutoff", type=int, default=5)
     parser.add_argument("--min-frequency", type=int, default=0)

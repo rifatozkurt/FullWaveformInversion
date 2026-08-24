@@ -21,20 +21,93 @@ from src.experiments.base import (
     simulation_parameters,
 )
 
-# this freeezes the encoder part of the unet. however, the batch norm layers need to be manually put into eval mode to avoid them from updating running stats.
-def freeze_unet_encoder(model):
-    for param in model.parameters():
-        param.requires_grad = False
+FREEZE_MODES = ("encoder", "decoder", "random_encoder", "none")
 
-    for module in (
-        model.convolutionsUp,
-        model.bnormsUp,
-        model.activationsUp,
-    ):
-        for param in module.parameters():
+
+def unet_encoder_modules(model):
+    """Down path plus bottleneck."""
+    return [
+        model.convolutionsDown, model.bnormsDown, model.activationsDown,
+        model.convolutionsBottleneck, model.bnormsBottleneck,
+        model.activationsBottleneck,
+    ]
+
+
+def unet_decoder_modules(model):
+    """Up path."""
+    return [model.convolutionsUp, model.bnormsUp, model.activationsUp]
+
+
+def apply_freeze_mode(model, mode, seed=None):
+    """
+    Freeze part of the U-Net and report what is trainable and what must be held
+    in eval mode.
+
+    The literature disagrees about freezing, and the disagreement is confounded
+    by domain gap. Yosinski et al. establish general-to-specific and are read as
+    implying that freezing early layers should be roughly free; Amiri et al.
+    find on ultrasound U-Nets that freezing the encoder and fine-tuning the
+    decoder is often the WORST choice -- but they pretrain on natural images, so
+    their early layers face a large domain shift. Raghu et al. and Karimi et al.
+    argue much of the benefit is initialization scale rather than learned
+    features at all.
+
+    This thesis transfers IN-DOMAIN (adjoint gradients -> gamma, same physics
+    and generator), which removes the domain-gap confound. The modes below let
+    the experiment adjudicate rather than illustrate:
+
+    ``encoder``         freeze the down path + bottleneck, train the decoder.
+                        The configuration the field's usual advice implies.
+    ``decoder``         the reverse; Amiri et al.'s better-performing direction,
+                        tested here without their domain shift.
+    ``random_encoder``  RE-INITIALIZE the encoder randomly, freeze it, and train
+                        only the decoder. The control for Raghu/Karimi: if this
+                        matches a frozen PRETRAINED encoder, then what transfers
+                        is not the learned features.
+    ``none``            full fine-tuning baseline.
+
+    Frozen BatchNorm modules are returned separately: they must be held in
+    eval() every epoch or they keep updating running statistics even with
+    requires_grad=False, which silently changes a "frozen" branch.
+    """
+    if mode not in FREEZE_MODES:
+        raise ValueError(f"freeze_mode must be one of {FREEZE_MODES}, got {mode!r}")
+
+    encoder = unet_encoder_modules(model)
+    decoder = unet_decoder_modules(model)
+
+    if mode == "none":
+        for param in model.parameters():
             param.requires_grad = True
+        frozen = []
+    else:
+        if mode == "random_encoder":
+            # Discard the pretrained encoder weights entirely, keeping only the
+            # architecture and the initialization scheme.
+            if seed is not None:
+                torch.manual_seed(int(seed))
+            for module in encoder:
+                module.apply(NN.initWeights)
+        frozen = decoder if mode == "decoder" else encoder
+        trainable = encoder if mode == "decoder" else decoder
+        for param in model.parameters():
+            param.requires_grad = False
+        for module in trainable:
+            for param in module.parameters():
+                param.requires_grad = True
 
-    return [p for p in model.parameters() if p.requires_grad]
+    trainable_parameters = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_parameters:
+        raise ValueError(f"freeze_mode {mode!r} left no trainable parameters")
+    frozen_batchnorms = [m for m in frozen
+                         if isinstance(m, torch.nn.ModuleList)
+                         and any(isinstance(x, torch.nn.BatchNorm2d) for x in m)]
+    return trainable_parameters, frozen_batchnorms
+
+
+def freeze_unet_encoder(model):
+    """Backwards-compatible alias for the original encoder-freezing behaviour."""
+    return apply_freeze_mode(model, "encoder")[0]
 
 
 class TransferLearningFWIFrozenEncoder:
@@ -80,7 +153,19 @@ class TransferLearningFWIFrozenEncoder:
         model.load_state_dict(torch.load(path, map_location=device))
         model.to(device)
 
-        trainable_parameters = freeze_unet_encoder(model)
+        freeze_mode = str(cfg.get("freeze_mode", "encoder"))
+        trainable_parameters, frozen_batchnorms = apply_freeze_mode(
+            model, freeze_mode, seed=cfg.get("seed")
+        )
+        total_parameters = sum(p.numel() for p in model.parameters())
+        trainable_count = sum(p.numel() for p in trainable_parameters)
+        print(
+            "freeze_mode={}: {:,}/{:,} trainable ({:.1f}%)".format(
+                freeze_mode, trainable_count, total_parameters,
+                100.0 * trainable_count / max(1, total_parameters),
+            ),
+            flush=True,
+        )
         forwardSolver = create_forward_solver(params, device)
         inputData = normalize_input_data(initialGradient, self.config).to(device)
 
@@ -106,9 +191,10 @@ class TransferLearningFWIFrozenEncoder:
             optimizer.zero_grad(set_to_none=True)
             model.train()
 
-            # the batch norm layers need to be in eval mode
-            model.bnormsDown.eval()
-            model.bnormsBottleneck.eval()
+            # Frozen BatchNorms must be held in eval(): requires_grad=False does
+            # NOT stop them updating running statistics.
+            for module in frozen_batchnorms:
+                module.eval()
             #----------------------------------------------
             
             gammaPred = torch.ones(
@@ -185,6 +271,9 @@ class TransferLearningFWIFrozenEncoder:
             run_dir=Path(run_dir),
             metadata={
                 "epochs": epochs,
+                "freeze_mode": freeze_mode,
+                "trainable_parameters": trainable_count,
+                "total_parameters": total_parameters,
                 "pretrain_samples": sample,
                 "epochs_pretrain": epochs_pretrain,
             },

@@ -11,6 +11,7 @@ from src.experiments.base import (
     ExperimentResult,
     create_forward_solver,
     create_initial_conditions,
+    centered_bias_parameter_groups,
     get_device,
     load_case_data,
     parameter_grad_norm,
@@ -62,6 +63,7 @@ class INRMPECenteredFWI:
             grid_aspect=float(
                 cfg.get("grid_aspect", (params["Ny"] + 1) / (params["Nx"] + 1))
             ),
+            learnable_bias=bool(cfg.get("learnable_bias", False)),
         ).to(device)
 
         x = torch.linspace(-1, 1, params["Nx"] + 1, device=device)
@@ -70,7 +72,11 @@ class INRMPECenteredFWI:
         coords = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=1)
 
         epochs = int(cfg["epochs"])
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"], weight_decay=cfg["l2"])
+        groups = centered_bias_parameter_groups(model, cfg)
+        optimizer = torch.optim.Adam(groups, weight_decay=cfg["l2"])
+        if any(g["name"] == "centring_bias" for g in groups):
+            print("centring bias is LEARNABLE, lr={:.1e}".format(
+                next(g["lr"] for g in groups if g["name"] == "centring_bias")), flush=True)
         lr_lambda = lambda epoch: (cfg["beta"] * epoch + 1) ** cfg["alpha"]
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         tv_weight = float(cfg.get("tv_weight", 0.0))

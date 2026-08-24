@@ -1,10 +1,60 @@
+# =============================================================================
+#  FINAL THESIS CONFIGURATION
+#  Extensions to Deep Learning Methods for Full Waveform Inversion in NDT
+# =============================================================================
+#  This is the single authoritative configuration for every experiment reported
+#  in the thesis. All runner scripts default to it. The other configs/*.yaml are
+#  kept only for reproducing earlier, pre-cleanup runs.
+#
+#  DATA LAYOUT (verified, and NOT interchangeable)
+#    data/extended/  ids 0-14999    all pretraining data
+#    data/eval/      ids 15000-15999 held-out evaluation; no overlap with extended
+#    data/train/     ids 0-799      the legacy 800-sample set. NOTE: these are
+#                                   DIFFERENT samples from extended[0:800] despite
+#                                   sharing index numbers -- verified by content.
+#                                   This thesis uses extended[0:800].
+#    data/casestudy/ ids 1-4        out-of-distribution shapes; NOT used for any
+#                                   reported evaluation or hyperparameter choice.
+#
+#  CONVENTIONS IN FORCE (see notes/implementation_notes_for_thesis.md)
+#    * src/metrics.py is the single source of truth for gamma error and void
+#      metrics. The physical FWI cost keeps its 0.5; every REPORTED gamma metric
+#      is a plain mean over the physical interior. Void masks threshold gamma
+#      directly (gamma <= 0.5), never a logit.
+#    * INRs use output_mode: direct_gamma with a POSITIVE final_bias, which is
+#      Singh et al.'s published convention. `voidness` is mathematically
+#      identical and retained only for loading old checkpoints.
+#    * One shared gradient_normalization block feeds U-Net pretraining, SegFormer
+#      pretraining and all downstream FWI, so the architecture comparison is not
+#      confounded by preprocessing.
+#    * SegFormer pretrains on MSE against the true gamma field, matching the
+#      U-Net, so the head-to-head isolates architecture.
+# =============================================================================
+
+# Full, standalone configuration for the 15,000-case model-scaling run.
+# This is experimental.yaml with the finalized SegFormer improvements and
+# large-dataset-safe comparative-pretraining settings applied directly.
 paths:
   train_data: data/extended
-  test_data: data/test
-  casestudy_data: data/casestudy
-  pretrained_models: models/pretrained
+  test_data: data/eval
+  casestudy_data: data/eval    # evaluation uses held-out eval/, NOT casestudy/
+  pretrained_models: models/final
   checkpoints: models/checkpoints
-  runs: runs/experimental
+  runs: runs/final
+
+comparative_pretraining:
+  # 100 dropped: too few samples to say anything about scaling.
+  sample_counts: [250, 500, 1000, 5000, 10000, 15000]
+  available_samples: 15000
+  # segformer_imagenet is pretrained at 15000 only -- it answers a different
+  # question (does out-of-domain pretraining substitute for in-domain data)
+  # rather than a scaling question.
+  models: [unet, segformer]
+  seed: 30
+  # Keep checkpoints where the downstream experiment path resolver expects
+  # them. The runner refuses accidental overwrite unless --overwrite is used.
+  output_dir: models/final
+  run_dir: runs/final/comparative_pretraining
 
 # Shared adjoint-gradient normalization, used by U-Net pretraining, SegFormer
 # pretraining and every downstream FWI experiment. One setting for all models so
@@ -39,7 +89,7 @@ source:
 data_generation:
   seed: 2
   train:
-    number_of_cases: 9000
+    number_of_cases: 15000
     number_of_damages: 1
     factor_to_avoid_inverse_crime: 2
   test:
@@ -65,11 +115,15 @@ models:
     patch_sizes: [7, 3, 3, 3]
     strides: [4, 2, 2, 2]
     mlp_ratios: [4, 4, 4, 4]
-    decoder_hidden_size: 64
+    decoder_hidden_size: 256
     hidden_dropout_prob: 0.0
     attention_probs_dropout_prob: 0.0
-    classifier_dropout_prob: 0.0
-    drop_path_rate: 0.0
+    classifier_dropout_prob: 0.05
+    drop_path_rate: 0.02
+    decoder_norm: batch_no_running
+    decoder_norm_groups: 8
+  # Optional model selected with --models segformer_highres. It inherits the
+  # SegFormer settings above and adds only the full-resolution residual branch.
   # PREVIOUS narrowed spec, kept so the old runs can be reproduced:
   # select with --models segformer_narrow where a script supports it.
   segformer_narrow:
@@ -81,22 +135,34 @@ models:
   #   patch_sizes: [7, 3, 3, 3]
   #   strides: [4, 2, 2, 2]
   #   mlp_ratios: [4, 4, 4, 4]
-  #   decoder_hidden_size: 64
+  #   decoder_hidden_size: 256
   #   hidden_dropout_prob: 0.0
   #   attention_probs_dropout_prob: 0.0
-  #   classifier_dropout_prob: 0.0
-  #   drop_path_rate: 0.0
+  #   classifier_dropout_prob: 0.05
+  #   drop_path_rate: 0.02
+  #   decoder_norm: batch_no_running
+  #   decoder_norm_groups: 8
+  # Optional model selected with --models segformer_highres. It inherits the
+  # SegFormer settings above and adds only the full-resolution residual branch.
+  segformer_highres:
+    refiner_channels: 8
 
 pretraining:
   seed: 30
   split_seed: 2
+  # 800 = the freezing experiment's baseline U-Net, matching Singh et al.
+  # The multi-size scaling study is handled by comparative_pretraining.
   numberOfSamples: 800
-  availableSamples: 800
+  availableSamples: 15000
   trainingType: supervised
   model_type: Unet
   NNchannels: [1, 16, 32, 64, 128]
   numberOfConvolutionsPerBlock: 2
   batchDivisor: 10
+  batch_size: 16
+  validation_batch_size: 16
+  preload_to_device: false
+  print_every_batches: 100
   lr: 5.0e-04
   alpha: -0.5
   beta: 0.2
@@ -112,14 +178,17 @@ segformer_pretraining:
   objective: mse
   seed: 30
   split_seed: 2
-  numberOfSamples: 800
-  availableSamples: 800
+  numberOfSamples: 15000
+  availableSamples: 15000
   trainingType: segmentation
   model_type: SegFormer
-  batch_size: 4
-  lr: 3.0e-04
-  weight_decay: 1.0e-04
-  scheduler: cosine
+  batch_size: 16
+  lr: 1.5e-04
+  weight_decay: 1.0e-03
+  scheduler: warmup_cosine
+  warmup_epochs: 3
+  warmup_start_factor: 0.1
+  min_lr_ratio: 0.05
   epochs: 100
   clipGrad: 1.0
   dice_weight: 1.0
@@ -127,6 +196,10 @@ segformer_pretraining:
   void_gamma_threshold: 0.5
   eval_threshold: 0.5
   void_prior: 0.01
+  checkpoint_selection: dice_score
+  minimum_epochs: 30
+  early_stopping_patience: 15
+  print_every_batches: 100
   gradient_normalization:
     mode: robust_abs
     quantile: 0.99
@@ -134,8 +207,16 @@ segformer_pretraining:
     clamp: 1.0
 
 experiments:
-  cases: [1, 2, 3, 4]
+  # Held-out in-distribution eval cases. Void fractions vary widely
+  # (0.18%-4.14% over 15000-15005), so per-case values must be reported,
+  # not just the mean. Cases 15000-15003 alone would under-represent the
+  # population mean by >2x, which is why six are used rather than four.
+  cases: [15000, 15001, 15002, 15003, 15004, 15005]
+  # The freezing experiment's baseline U-Net. 800 matches Singh et al., and
+  # keeps that experiment independent of the comparative pretraining run.
   pretrain_samples: [800]
+  # U-Net retains its existing 100-epoch recipe. SegFormer transfer uses its
+  # explicit 60-epoch checkpoint name below.
   epochs_pretrain: 100
   modelType: Unet
   NNchannels: [1, 16, 32, 64, 128]
@@ -152,7 +233,7 @@ experiments:
 
   conventional_fwi_initial_guess:
     seed: 99
-    pretrain_samples: 800
+    pretrain_samples: 15000
     lr: 5.0e-02
     alpha: 0.0
     beta: 0.0
@@ -399,14 +480,16 @@ experiments:
 
   transfer_segformer_fwi:
     seed: 99
-    pretrained_checkpoint: model_SegFormer_100_segmentation_800.pt
+    pretrained_checkpoint: model_SegFormer_100_segmentation_15000.pt
     trainable_mode: all
-    lr: 3.0e-04
-    weight_decay: 1.0e-04
+    optimization_model_mode: eval
+    lr: 1.0e-04
+    weight_decay: 0.0
     alpha: -0.5
     beta: 0.2
     epochs: 15
-    restore_best_observed: true
-    clipGrad: 1.0
+    clipGrad: 0.5
     l2: 1.0e-06
-    costScaling: 1.0e+11
+    costScaling: 1.0e+10
+    record_post_step: true
+    restore_best_observed: true

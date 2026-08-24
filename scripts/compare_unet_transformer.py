@@ -23,10 +23,11 @@ DEFAULT_SAMPLE_COUNTS = "100,250,500,1000,5000,10000"
 # old runs stay reproducible, but it is no longer part of the default comparison
 # and must be requested explicitly with --models.
 DEFAULT_MODELS = "unet,segformer"
-SUPPORTED_MODELS = ("unet", "segformer", "segformer_highres")
+SUPPORTED_MODELS = ("unet", "segformer", "segformer_imagenet", "segformer_highres")
 MODEL_STYLES = {
     "unet": {"label": "U-Net", "color": "#2f5aa8"},
     "segformer": {"label": "SegFormer", "color": "#b64040"},
+    "segformer_imagenet": {"label": "SegFormer (ImageNet init)", "color": "#2f8f5b"},
     "segformer_highres": {
         "label": "SegFormer HighRes",
         "color": "#2f8f5b",
@@ -35,6 +36,7 @@ MODEL_STYLES = {
 MODEL_METHODS = {
     "unet": "transfer_learning_fwi",
     "segformer": "transfer_segformer_fwi",
+    "segformer_imagenet": "transfer_segformer_fwi",
     "segformer_highres": "transfer_segformer_fwi",
 }
 
@@ -459,14 +461,16 @@ def main():
             "performance using matched pretraining sizes."
         )
     )
-    parser.add_argument("--config", default="configs/experimental.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument(
         "--cases",
         default="1,2,3,4",
         help="Comma-separated case IDs. Overrides --case when set.",
     )
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="FWI epochs. Omitted -> use the config value, so the "
+                             "config stays authoritative.")
     parser.add_argument("--sample-counts", default=DEFAULT_SAMPLE_COUNTS)
     parser.add_argument(
         "--models",
@@ -511,7 +515,7 @@ def main():
     cases = parse_csv_ints(args.cases) if args.cases else [int(args.case)]
     models = parse_csv_strings(args.models)
     model_dir = Path(args.model_dir)
-    if args.epochs < 1:
+    if args.epochs is not None and args.epochs < 1:
         raise ValueError("--epochs must be positive")
 
     checkpoints = validate_evaluation_inputs(
@@ -528,7 +532,10 @@ def main():
     print(f"  Cases: {cases}")
     print(f"  Models: {models}")
     print(f"  Pretraining sample counts: {sample_counts}")
-    print(f"  FWI epochs per run: {args.epochs}")
+    resolved_epochs = (args.epochs if args.epochs is not None
+                       else base_config["experiments"]["transfer_segformer_fwi"]["epochs"])
+    print(f"  FWI epochs per run: {resolved_epochs}"
+          f"{'  (from config)' if args.epochs is None else '  (CLI override)'}")
     print(f"  Total independent FWI runs: {planned_runs}")
     print(f"  Data directory: {data_dir}")
     print(f"  Model directory: {model_dir}")
@@ -576,14 +583,16 @@ def main():
                 config["paths"]["pretrained_models"] = str(model_dir)
                 if model_name == "unet":
                     config["experiments"]["pretrain_samples"] = [int(samples)]
-                    config["experiments"]["transfer_learning_fwi"][
-                        "epochs"
-                    ] = int(args.epochs)
+                    if args.epochs is not None:
+                        config["experiments"]["transfer_learning_fwi"][
+                            "epochs"
+                        ] = int(args.epochs)
                 else:
                     transfer_cfg = config["experiments"][
                         "transfer_segformer_fwi"
                     ]
-                    transfer_cfg["epochs"] = int(args.epochs)
+                    if args.epochs is not None:
+                        transfer_cfg["epochs"] = int(args.epochs)
                     transfer_cfg["pretrained_checkpoint"] = str(checkpoint)
 
                 model_run_dir = case_dir / f"{model_name}_{samples}"
@@ -657,7 +666,7 @@ def main():
                 "run_type: compare_unet_transformer",
                 f"config: {args.config}",
                 f"cases: {','.join(str(case_id) for case_id in cases)}",
-                f"epochs: {args.epochs}",
+                f"epochs: {resolved_epochs}",
                 f"sample_counts: {args.sample_counts}",
                 f"models: {','.join(models)}",
                 f"model_dir: {model_dir}",

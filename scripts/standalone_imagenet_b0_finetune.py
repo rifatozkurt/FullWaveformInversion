@@ -279,7 +279,7 @@ def main():
             "gradient -> void-mask task. Writes only to its own directories."
         )
     )
-    parser.add_argument("--config", default="configs/extended.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default=None, help="Defaults to paths.train_data")
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR)
     parser.add_argument("--output-dir", default=DEFAULT_RUN_ROOT)

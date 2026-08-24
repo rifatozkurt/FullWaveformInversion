@@ -315,7 +315,7 @@ def main():
             "checkpoints on the case studies. Writes only to its own run directory."
         )
     )
-    parser.add_argument("--config", default="configs/extended.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default=None, help="Defaults to paths.casestudy_data")
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR)
     parser.add_argument("--checkpoints", default=None,

@@ -232,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fit an INR to the first direct gamma update implied by one FWI adjoint gradient."
     )
-    parser.add_argument("--config", default="configs/experimental.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--method", default="transfer_segformer_fwi", choices=METHODS)
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--data-dir", default=None)

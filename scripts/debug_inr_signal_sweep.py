@@ -334,7 +334,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Sweep INR signal-propagation settings and log detailed adjoint-to-gamma diagnostics."
     )
-    parser.add_argument("--config", default="configs/experimental.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

@@ -30,11 +30,12 @@ from src.pretrain_segformer import (
 )
 
 
-SEGFORMER_MODELS = ("segformer", "segformer_highres")
+SEGFORMER_MODELS = ("segformer", "segformer_imagenet", "segformer_highres")
 SUPPORTED_MODELS = {"unet", *SEGFORMER_MODELS}
 MODEL_LABELS = {
     "unet": "U-Net",
     "segformer": "SegFormer",
+    "segformer_imagenet": "SegFormer (ImageNet init)",
     "segformer_highres": "SegFormer HighRes",
 }
 
@@ -369,7 +370,7 @@ def main():
             "on matched, nested sample-count prefixes."
         )
     )
-    parser.add_argument("--config", default="configs/extended.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--run-dir", default=None)
@@ -638,11 +639,7 @@ def main():
                 [run_dir / "figures", run_dir / "histories", run_dir / "outputs"]
             )
             save_subrun_config(config, run_dir)
-            display_name = (
-                "SegFormer HighResolution"
-                if model_variant == "segformer_highres"
-                else "SegFormer"
-            )
+            display_name = MODEL_LABELS.get(model_variant, model_variant)
             print(
                 f"\n=== Pretraining {display_name} with {samples} samples ===",
                 flush=True,

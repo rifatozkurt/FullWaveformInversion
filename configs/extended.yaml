@@ -67,9 +67,13 @@ models:
     batch_norm: true
   segformer:
     in_channels: 1
-    hidden_sizes: [24, 48, 96, 192]
+    # MiT-B0 widths. Measured on this GPU: 1.84x the parameters of the
+    # previous [24,48,96,192] spec but 0.91x the step time (109 vs 119 ms
+    # per batch-16 step) -- multiples of 32 map better onto tensor cores.
+    # These are also the ONLY widths that accept ImageNet MiT-B0 weights.
+    hidden_sizes: [32, 64, 160, 256]
     depths: [2, 2, 2, 2]
-    num_attention_heads: [1, 2, 4, 8]
+    num_attention_heads: [1, 2, 5, 8]
     sr_ratios: [8, 4, 2, 1]
     patch_sizes: [7, 3, 3, 3]
     strides: [4, 2, 2, 2]
@@ -81,6 +85,26 @@ models:
     drop_path_rate: 0.02
     decoder_norm: batch_no_running
     decoder_norm_groups: 8
+  # Optional model selected with --models segformer_highres. It inherits the
+  # SegFormer settings above and adds only the full-resolution residual branch.
+  # PREVIOUS narrowed spec, kept so the old runs can be reproduced:
+  # select with --models segformer_narrow where a script supports it.
+  segformer_narrow:
+  #   in_channels: 1
+  #   hidden_sizes: [24, 48, 96, 192]
+  #   depths: [2, 2, 2, 2]
+  #   num_attention_heads: [1, 2, 4, 8]
+  #   sr_ratios: [8, 4, 2, 1]
+  #   patch_sizes: [7, 3, 3, 3]
+  #   strides: [4, 2, 2, 2]
+  #   mlp_ratios: [4, 4, 4, 4]
+  #   decoder_hidden_size: 256
+  #   hidden_dropout_prob: 0.0
+  #   attention_probs_dropout_prob: 0.0
+  #   classifier_dropout_prob: 0.05
+  #   drop_path_rate: 0.02
+  #   decoder_norm: batch_no_running
+  #   decoder_norm_groups: 8
   # Optional model selected with --models segformer_highres. It inherits the
   # SegFormer settings above and adds only the full-resolution residual branch.
   segformer_highres:
@@ -220,6 +244,8 @@ experiments:
 
   inr_siren_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
@@ -281,6 +307,8 @@ experiments:
 
   inr_mpe_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     num_levels: 16
     base_resolution: 50
     per_level_scale: 1.05
@@ -340,6 +368,8 @@ experiments:
 
   inr_ig_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     lr_fusion: 3.0e-04
     lr_siren: 3.0e-04  # SIREN branch behaves like IFWI; 100x lower than the grid
     lr_grid: 1.0e-01  # grid branch behaves like MPE-FWI
@@ -386,6 +416,15 @@ experiments:
 
   transfer_learning_fwi_frozen_encoder:
     seed: 99
+    # encoder | decoder | random_encoder | none
+    #   encoder        : freeze down path + bottleneck (the usual advice)
+    #   decoder        : the reverse -- Amiri et al.'s better direction
+    #   random_encoder : CONTROL for Raghu/Karimi -- randomly re-init the
+    #                    encoder, freeze it, train only the decoder. If this
+    #                    matches a frozen pretrained encoder, what transfers
+    #                    is not the learned features.
+    #   none           : full fine-tuning baseline
+    freeze_mode: encoder
     lr: 5.0e-04
     alpha: -0.5
     beta: 0.2

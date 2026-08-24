@@ -210,7 +210,7 @@ def main():
             "pretraining on exactly matched data."
         )
     )
-    parser.add_argument("--config", default="configs/extended.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default="data/raw")
     parser.add_argument("--samples", type=int, default=250)
     parser.add_argument("--available-samples", type=int, default=1000)

@@ -184,7 +184,7 @@ def main():
         description="Approximate one gamma image with progressively richer 2D sine/Fourier bases."
     )
     parser.add_argument("--case", type=int, default=1)
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--start-frequency", type=int, default=1)
     parser.add_argument("--max-frequency", type=int, default=100)

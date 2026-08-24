@@ -42,7 +42,7 @@ def ig_parameter_groups(model, cfg):
     same factor, so the ratio between the groups is preserved across the schedule.
     """
     base = float(cfg["lr"])
-    return [
+    groups = [
         {"params": list(model.grids),
          "lr": float(cfg.get("lr_grid", base)), "name": "grid"},
         {"params": list(model.siren_layers.parameters()),
@@ -50,6 +50,13 @@ def ig_parameter_groups(model, cfg):
         {"params": list(model.fusion_mlp.parameters()),
          "lr": float(cfg.get("lr_fusion", base)), "name": "fusion"},
     ]
+    # A learnable centring bias is one shared scalar and needs its own, much
+    # larger rate; absent (buffer bias) this group is simply not added.
+    bias = [p for n, p in model.named_parameters() if n == "final_bias"]
+    if bias:
+        groups.append({"params": bias,
+                       "lr": float(cfg.get("lr_bias", base)), "name": "centring_bias"})
+    return groups
 
 
 class INRIGCenteredFWI:
@@ -94,6 +101,7 @@ class INRIGCenteredFWI:
             fusion_hidden_layers=int(cfg["fusion_hidden_layers"]),
             fusion_init_std=float(cfg.get("fusion_init_std", 1e-3)),
             feature_norm=bool(cfg.get("feature_norm", False)),
+            learnable_bias=bool(cfg.get("learnable_bias", False)),
             output_mode=cfg.get("output_mode", "direct_gamma"),
             final_bias=float(cfg.get("final_bias", 3.0)),
         ).to(device)

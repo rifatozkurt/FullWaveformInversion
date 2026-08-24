@@ -329,7 +329,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Run staged INR-family tuning and carry best parameters between methods."
     )
-    parser.add_argument("--config", default="configs/long_run.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--selection-metric", default="best_mse", choices=("best_mse", "final_mse", "best_cost", "final_cost"))

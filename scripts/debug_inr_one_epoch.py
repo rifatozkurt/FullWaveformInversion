@@ -296,7 +296,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run one debug INR/transfer-learning epoch and plot the first adjoint gradient."
     )
-    parser.add_argument("--config", default="configs/experimental.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--method", default="inr_ig_centered_fwi", choices=METHODS)
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--data-dir", default=None)

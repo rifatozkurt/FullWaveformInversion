@@ -168,7 +168,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Quick supervised sanity check: can an INR model learn one gamma image without FWI?"
     )
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--method", default=selected_method, choices=METHODS)
     parser.add_argument("--material-path", default=None)
     parser.add_argument("--epochs", type=int, default=100)

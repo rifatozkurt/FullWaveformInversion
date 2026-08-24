@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Experimental multi-case GPU-batched training-data generator."
     )
-    parser.add_argument("--config", default="configs/experimental.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--start-case-id", type=int, default=0)
     parser.add_argument("--number-of-cases", type=int, default=1)
     parser.add_argument("--case-batch-size", type=int, default=1)

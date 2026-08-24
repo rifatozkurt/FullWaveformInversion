@@ -37,7 +37,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Train plain SegFormer from scratch on one sample."
     )
-    parser.add_argument("--config", default="configs/extended.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument(
         "--data-dir",
         default=None,

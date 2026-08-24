@@ -162,11 +162,17 @@ def normalize_segformer_variant(value):
         "segformer_highres": "segformer_highres",
         "segformer_high_resolution": "segformer_highres",
         "highres": "segformer_highres",
+        # Same architecture as `segformer`, but the encoder starts from
+        # ImageNet-1k MiT-B0 weights instead of random. Kept as a distinct
+        # variant so checkpoint names, labels and run directories separate
+        # automatically rather than by hand.
+        "segformer_imagenet": "segformer_imagenet",
+        "imagenet": "segformer_imagenet",
     }
     if variant not in aliases:
         raise ValueError(
-            "SegFormer model variant must be segformer or segformer_highres, "
-            f"got {value!r}"
+            "SegFormer model variant must be segformer, segformer_highres or "
+            f"segformer_imagenet, got {value!r}"
         )
     return aliases[variant]
 
@@ -180,6 +186,8 @@ def segformer_model_type(training_config, model_variant):
                 "SegFormerHighResolution",
             )
         )
+    if variant == "segformer_imagenet":
+        return str(training_config.get("imagenet_model_type", "SegFormerImageNet"))
     return str(training_config.get("model_type", "SegFormer"))
 
 
@@ -206,6 +214,15 @@ def build_segformer_model(config, params, model_variant=None):
             gamma_min=params["gamma0"],
             void_prior=float(cfg["void_prior"]),
         )
+
+    # Optional ImageNet-1k initialization of the encoder. Requires the encoder
+    # widths to be exactly MiT-B0's; load_imagenet_encoder raises otherwise
+    # rather than silently transferring a subset.
+    if variant == "segformer_imagenet" or bool(cfg.get("imagenet_init", False)):
+        NN.load_imagenet_encoder(
+            model, repo_id=str(cfg.get("imagenet_repo", NN.DEFAULT_IMAGENET_REPO))
+        )
+        model.reset_classifier_bias()
     return model, variant
 
 
@@ -583,6 +600,10 @@ def pretrain_segformer(
                     "model_variant": model_variant,
                     "model_type": model_type,
                     "objective": objective,
+                "imagenet_init": (
+                    model_variant == "segformer_imagenet"
+                    or bool(cfg.get("imagenet_init", False))
+                ),
                 },
                 "epoch": epoch + 1,
                 "validation_metrics": val_metrics,

@@ -146,6 +146,8 @@ experiments:
 
   inr_siren_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     hidden_features: 128
     hidden_layers: 4
     omega0: 30
@@ -207,6 +209,8 @@ experiments:
 
   inr_mpe_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     num_levels: 16
     base_resolution: 50
     per_level_scale: 1.05
@@ -266,6 +270,8 @@ experiments:
 
   inr_ig_centered_fwi:
     seed: 50
+    lr_bias: 1.0      # one shared scalar: needs a far larger rate than the network
+    learnable_bias: true     # centring mean is a Parameter, not a pinned buffer
     lr_fusion: 3.0e-04
     lr_siren: 3.0e-04  # SIREN branch behaves like IFWI; 100x lower than the grid
     lr_grid: 1.0e-01  # grid branch behaves like MPE-FWI
@@ -312,6 +318,15 @@ experiments:
 
   transfer_learning_fwi_frozen_encoder:
     seed: 99
+    # encoder | decoder | random_encoder | none
+    #   encoder        : freeze down path + bottleneck (the usual advice)
+    #   decoder        : the reverse -- Amiri et al.'s better direction
+    #   random_encoder : CONTROL for Raghu/Karimi -- randomly re-init the
+    #                    encoder, freeze it, train only the decoder. If this
+    #                    matches a frozen pretrained encoder, what transfers
+    #                    is not the learned features.
+    #   none           : full fine-tuning baseline
+    freeze_mode: encoder
     lr: 5.0e-04
     alpha: -0.5
     beta: 0.2

@@ -259,7 +259,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run compact hyperparameter sweeps for INR-family FWI methods."
     )
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--case", type=int, default=1)
     parser.add_argument("--methods", default="inr_fwi,inr_siren_fwi")
     parser.add_argument("--epochs", type=int, default=35)

@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", default="inr_siren_fwi", required=False, choices=EXPERIMENTS.keys())
     parser.add_argument("--case", default=1, required=False, type=int)
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/config_final.yaml")
     args = parser.parse_args()
 
     config_path = Path(args.config)
