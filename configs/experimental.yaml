@@ -12,7 +12,7 @@ paths:
 #   robust_abs : sign-preserving divide by the `quantile` of |gradient|, clamped
 #   minmax     : legacy per-sample [min,max] -> [-1,1] affine map
 gradient_normalization:
-  mode: robust_abs
+  mode: minmax
   quantile: 0.99
   eps: 1.0e-08
   clamp: 1.0

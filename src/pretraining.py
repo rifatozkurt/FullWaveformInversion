@@ -152,8 +152,15 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         )
     )
     batch_norm = bool(unet_cfg.get("batch_norm", True))
+    # Legacy rule (legacy/Pretraining.py:74): batchSize = numberOfSamples // 10,
+    # and validation runs as ONE full-set batch. Both are reproduced exactly at
+    # the 800-sample scale. `max_batch_size` only caps the large scaling runs,
+    # where the legacy rule would ask for a 1500-sample batch.
     legacy_batch_size = max(1, numberOfSamples // int(cfg["batchDivisor"]))
     batchSize = max(1, int(cfg.get("batch_size", legacy_batch_size)))
+    batch_cap = cfg.get("max_batch_size")
+    if batch_cap is not None:
+        batchSize = max(1, min(batchSize, int(batch_cap)))
 
     # Shared normalization -- identical to the SegFormer's, so the comparison
     # isolates architecture rather than preprocessing. See src/networks.py.
@@ -170,6 +177,9 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         1,
         int(cfg.get("validation_batch_size", len(datasetValidation))),
     )
+    validation_cap = cfg.get("max_validation_batch_size")
+    if validation_cap is not None:
+        validation_batch_size = max(1, min(validation_batch_size, int(validation_cap)))
     validation_batch_size = min(validation_batch_size, max(1, len(datasetValidation)))
     dataloaderTraining = DataLoader(datasetTraining, batch_size=batchSize)
     dataloaderValidation = DataLoader(

@@ -182,14 +182,28 @@ def normalize_gradient(
     elif mode == "robust_abs":
         flat_abs = gradient.detach().abs().flatten(start_dim=1)
         scale = torch.quantile(flat_abs, float(quantile), dim=1)
-        scale = torch.clamp(scale, min=float(eps)).view(-1, 1, 1, 1)
+        # Guard against a DEGENERATE (identically zero) field only. `eps` must
+        # never act as an absolute floor: adjoint gradients here have magnitude
+        # ~1e-14, so a floor of 1e-8 replaces the real scale and destroys the
+        # input. See the comment in the `minmax` branch below.
+        scale = torch.where(scale > 0, scale, torch.full_like(scale, float(eps)))
+        scale = scale.view(-1, 1, 1, 1)
         normalized = gradient / scale
         if clamp is not None:
             normalized = torch.clamp(normalized, -float(clamp), float(clamp))
     elif mode == "minmax":
         low = torch.amin(gradient, (2, 3), keepdim=True)
         high = torch.amax(gradient, (2, 3), keepdim=True)
-        normalized = (gradient - low) / torch.clamp(high - low, min=float(eps)) * 2 - 1
+        span = high - low
+        # DO NOT clamp this to an absolute `eps`. The adjoint gradient has a
+        # per-sample range of about 7e-14; clamping the denominator to 1e-8
+        # maps EVERY sample to the constant -1 and the network then sees no
+        # input at all (measured: the reference checkpoint drops from AUC 0.899
+        # to 0.417 and from 0.373x to 0.999x the trivial loss). Legacy applies
+        # no clamp whatsoever (legacy/Pretraining.py:77-80); the only real
+        # failure mode is an identically constant field, guarded here.
+        span = torch.where(span > 0, span, torch.full_like(span, float(eps)))
+        normalized = (gradient - low) / span * 2 - 1
     else:
         raise ValueError(f"Unknown gradient normalization mode: {mode}")
 
@@ -733,17 +747,21 @@ class Unet(torch.nn.Module):
         # convolution, so this is asymmetric, and the remaining `bnormsUp`
         # modules are constructed but never called.
         #
-        # DO NOT "FIX" THIS. It looks like an oversight and is not. Normalizing
-        # every decoder convolution was tried and measured: training loss is
-        # unaffected (0.00077 vs 0.00081) but VALIDATION loss in eval() mode
-        # degrades 19x (0.179 vs 0.0093), and predicted gamma collapses to a mean
-        # of 0.46 against a target of ~0.99 -- i.e. the network predicts void
-        # almost everywhere as soon as BatchNorm switches from batch statistics
-        # to running statistics. The extra decoder BatchNorms sit on activations
-        # whose per-batch distribution is too unstable for a running average to
-        # represent, so train and eval behaviour diverge catastrophically.
-        # Symptom to recognise: training loss near zero while validation loss
-        # pins near its maximum (0.5 for this objective) and oscillates.
+        # DO NOT "FIX" THIS. It looks like an oversight and is not: it is the
+        # behaviour of the reference implementation this work is built on, and
+        # the pretrained checkpoints were produced with it. Reproducing the
+        # legacy result is the reason it stays.
+        #
+        # CORRECTION (2026-08-24): an earlier version of this comment claimed a
+        # measured 19x validation degradation from enabling the remaining
+        # decoder BatchNorms. That measurement was CONFOUNDED -- it was taken
+        # while the U-Net was being fed robust_abs-normalized input, which by
+        # itself collapses validation to the "void everywhere" solution
+        # (train 1.1e-3 vs val 4.8e-1) with BatchNorm entirely disabled. The
+        # collapse was the normalization, not these BatchNorms. The U-Net is
+        # now pinned to the legacy minmax map; see configs/config_final.yaml.
+        # The effect of the extra decoder BatchNorms under minmax has NOT been
+        # measured, so no claim is made about it here.
         for i in range(len(self.channels) - 1):
             x = self.upsample(x)
             index = self.numberOfConvolutionsPerBlock * i

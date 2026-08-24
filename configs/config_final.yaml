@@ -24,9 +24,13 @@
 #    * INRs use output_mode: direct_gamma with a POSITIVE final_bias, which is
 #      Singh et al.'s published convention. `voidness` is mathematically
 #      identical and retained only for loading old checkpoints.
-#    * One shared gradient_normalization block feeds U-Net pretraining, SegFormer
-#      pretraining and all downstream FWI, so the architecture comparison is not
-#      confounded by preprocessing.
+#    * Gradient normalization is NOT shared. The U-Net path (pretraining and
+#      every U-Net FWI experiment) uses the legacy minmax map; the SegFormer
+#      uses robust_abs. This was tried the other way and the U-Net does not
+#      train under robust_abs: validation collapses to "void everywhere"
+#      (train 1.1e-3 vs val 4.8e-1) regardless of batch size or BatchNorm.
+#      CONSEQUENCE: the U-Net vs SegFormer comparison is confounded by
+#      preprocessing and must be qualified in the thesis.
 #    * SegFormer pretrains on MSE against the true gamma field, matching the
 #      U-Net, so the head-to-head isolates architecture.
 # =============================================================================
@@ -56,13 +60,13 @@ comparative_pretraining:
   output_dir: models/final
   run_dir: runs/final/comparative_pretraining
 
-# Shared adjoint-gradient normalization, used by U-Net pretraining, SegFormer
-# pretraining and every downstream FWI experiment. One setting for all models so
-# the architecture comparison is not confounded by preprocessing.
+# U-Net normalization: legacy minmax, used by U-Net pretraining and every U-Net
+# downstream FWI experiment. The SegFormer overrides this in its own block.
+# DO NOT set this to robust_abs -- the U-Net does not train under it.
 #   robust_abs : sign-preserving divide by the `quantile` of |gradient|, clamped
 #   minmax     : legacy per-sample [min,max] -> [-1,1] affine map
 gradient_normalization:
-  mode: robust_abs
+  mode: minmax
   quantile: 0.99
   eps: 1.0e-08
   clamp: 1.0
@@ -159,8 +163,12 @@ pretraining:
   NNchannels: [1, 16, 32, 64, 128]
   numberOfConvolutionsPerBlock: 2
   batchDivisor: 10
-  batch_size: 16
-  validation_batch_size: 16
+  # batch_size / validation_batch_size deliberately UNSET so the legacy
+  # rule applies: batch = numberOfSamples // batchDivisor (800 -> 80) and
+  # validation = one full-set batch (160). Matches legacy/Pretraining.py:74,88.
+  # The caps below bind only on the large comparative_pretraining sizes.
+  max_batch_size: 128
+  max_validation_batch_size: 256
   preload_to_device: false
   print_every_batches: 100
   lr: 5.0e-04

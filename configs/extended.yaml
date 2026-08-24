@@ -25,7 +25,7 @@ comparative_pretraining:
 #   robust_abs : sign-preserving divide by the `quantile` of |gradient|, clamped
 #   minmax     : legacy per-sample [min,max] -> [-1,1] affine map
 gradient_normalization:
-  mode: robust_abs
+  mode: minmax
   quantile: 0.99
   eps: 1.0e-08
   clamp: 1.0
@@ -120,8 +120,9 @@ pretraining:
   NNchannels: [1, 16, 32, 64, 128]
   numberOfConvolutionsPerBlock: 2
   batchDivisor: 10
-  batch_size: 16
-  validation_batch_size: 16
+  # Legacy rule: batch = numberOfSamples // batchDivisor, validation = full set.
+  max_batch_size: 128
+  max_validation_batch_size: 256
   preload_to_device: false
   print_every_batches: 100
   lr: 5.0e-04

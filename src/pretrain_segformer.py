@@ -397,10 +397,20 @@ def pretrain_segformer(
         gradients[row, 0] = torch.tensor(io.load_hdf(destination / f"gradient{sample_id}.h5"), dtype=torch.float32)
         gammas[row, 0] = torch.tensor(io.load_hdf(destination / f"material{sample_id}.h5"), dtype=torch.float32)
 
-    # Shared with the U-Net: top-level block first, SegFormer block only as a
-    # fallback for older configs.
+    # SegFormer block FIRST, top-level only as a fallback.
+    #
+    # These deliberately differ. The U-Net path is pinned to the legacy minmax
+    # map (legacy/Pretraining.py:77-80, legacy/TransferLearningFWI.py:127-129);
+    # the U-Net does not train under robust_abs -- validation collapses to the
+    # "void everywhere" solution (measured: train 1.1e-3, val 4.8e-1, a 442x
+    # gap, independent of batch size and present with bnorm disabled too).
+    # The SegFormer was designed and validated with robust_abs and keeps it.
+    #
+    # CONSEQUENCE: the U-Net vs SegFormer comparison is confounded by
+    # preprocessing. Do not present it as a pure architecture comparison
+    # without addressing this.
     norm_cfg = dict(
-        config.get("gradient_normalization", cfg.get("gradient_normalization", {})) or {}
+        cfg.get("gradient_normalization", config.get("gradient_normalization", {})) or {}
     )
     gradients = NN.normalize_gradient(gradients, **norm_cfg)
 
@@ -594,6 +604,12 @@ def pretrain_segformer(
                 "gamma_min": float(params["gamma0"]),
                 "void_prior": float(cfg["void_prior"]),
                 "gradient_normalization": norm_cfg,
+                # 2 = eps guards only an identically-constant field.
+                # 1 (or absent) = eps was an absolute floor, which for
+                # ~1e-14 gradients scaled every input to ~1e-7. Checkpoints
+                # without this key were fit to that broken scaling and
+                # CANNOT be used with the current normalization.
+                "normalization_version": 2,
                 "void_gamma_threshold": float(cfg["void_gamma_threshold"]),
                 "training_config": {
                     **dict(cfg),

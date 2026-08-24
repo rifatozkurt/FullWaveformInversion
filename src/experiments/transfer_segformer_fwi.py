@@ -182,6 +182,18 @@ class TransferSegFormerFWI:
         trainable_mode = cfg.get("trainable_mode", "all")
         trainable_parameter_count = set_segformer_trainable_mode(model, trainable_mode)
         norm_cfg = dict(checkpoint["gradient_normalization"])
+        # See src/networks.py: `eps` used to act as an absolute floor on the
+        # normalization denominator, which for gradients of magnitude ~1e-14
+        # rescaled every input to ~1e-7. A checkpoint fit to that scaling is
+        # incompatible with the corrected normalization -- the input it now
+        # receives differs by ~6 orders of magnitude.
+        if int(checkpoint.get("normalization_version", 1)) < 2:
+            raise RuntimeError(
+                "SegFormer checkpoint %s predates the gradient-normalization fix "
+                "(normalization_version < 2). It was trained on inputs scaled to "
+                "~1e-7 and cannot be used with the corrected normalization. "
+                "Re-run SegFormer pretraining." % checkpoint_path
+            )
         first_gradient = first_gradient_2d.unsqueeze(0).unsqueeze(0)
         input_data = NN.normalize_gradient_for_transformer(first_gradient, **norm_cfg).detach()
 
