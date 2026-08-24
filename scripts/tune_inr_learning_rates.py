@@ -99,6 +99,50 @@ print("RESULT " + json.dumps(out), flush=True)
 '''
 
 
+def apply_to_config(config_path, best):
+    """
+    Write the winning values into the YAML in place, preserving comments.
+
+    Text substitution rather than a yaml round-trip, because `yaml.safe_dump`
+    discards every comment in the file and this config carries a lot of them.
+    Only the exact `key:` line inside the matching `  <method>:` block is
+    touched. A rate that failed to beat the trivial solution is NOT written --
+    silently installing a value that reconstructs nothing would be worse than
+    leaving the previous one in place.
+    """
+    import re
+    import shutil
+
+    path = Path(config_path)
+    shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    text = path.read_text(encoding="utf-8")
+    applied, skipped = [], []
+
+    for method, row in sorted(best.items()):
+        if row["vs_trivial"] >= 0.99:
+            skipped.append(f"{method}: {row['key']}={row['value']:g} "
+                           f"({row['vs_trivial']:.3f}x trivial -- not usable)")
+            continue
+        block = re.search(rf"(^  {re.escape(method)}:\n(?:(?:    .*|\s*#.*)\n)*)", text, re.M)
+        if not block:
+            skipped.append(f"{method}: no such block in {path.name}")
+            continue
+        body, key, value = block.group(1), row["key"], row["value"]
+        line = f"    {key}: {value:g}"
+        if re.search(rf"^    {re.escape(key)}:", body, re.M):
+            new_body = re.sub(rf"^    {re.escape(key)}: .*$", line, body, count=1, flags=re.M)
+        else:                       # key absent (e.g. lr_bias on a fresh config)
+            new_body = re.sub(r"^(    seed: .*\n)", rf"\1{line}\n", body, count=1, flags=re.M)
+        if new_body == body:
+            skipped.append(f"{method}: could not place {key}")
+            continue
+        text = text[:block.start()] + new_body + text[block.end():]
+        applied.append(f"{method}: {key} -> {value:g}  ({row['vs_trivial']:.3f}x trivial)")
+
+    path.write_text(text, encoding="utf-8")
+    return applied, skipped
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -112,6 +156,9 @@ def main():
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--epochs", type=int, default=5,
                         help="Short by design: enough to rank rates and catch divergence.")
+    parser.add_argument("--apply", action="store_true",
+                        help="Write the winning values straight into --config, in place, "
+                             "preserving comments. A .bak copy is kept next to it.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -196,14 +243,40 @@ def main():
                 best[key] = row
         write_csv(root / "best_per_method.csv", list(best.values()))
         print("\n" + "=" * 78)
-        print("  BEST PER METHOD  (copy into configs/config_final.yaml)")
+        print("  BEST PER METHOD")
         print("-" * 78)
         for method, row in best.items():
+            flag = "" if row["vs_trivial"] < 0.99 else "   <-- NOT usable (>= trivial)"
             print(f"  {method:<28} {row['key']}: {row['value']:g}"
-                  f"      ({row['vs_trivial']:.3f}x trivial)")
+                  f"      ({row['vs_trivial']:.3f}x trivial){flag}")
         print("=" * 78)
         print("  A value at or above 1.0x has not reconstructed anything at this")
         print("  epoch budget -- treat it as 'no usable rate found', not as a winner.")
+
+        # A ready-to-paste YAML fragment, written whether or not --apply is used,
+        # so the numbers survive even if the config is not edited here.
+        fragment = ["# Selected by scripts/tune_inr_learning_rates.py",
+                    f"# case {case_id}, {args.epochs} FWI epochs, trivial MSE {trivial:.4e}",
+                    "experiments:"]
+        for method, row in sorted(best.items()):
+            fragment.append(f"  {method}:")
+            fragment.append(f"    {row['key']}: {row['value']:g}"
+                            f"   # {row['vs_trivial']:.3f}x trivial")
+        (root / "tuned_values.yaml").write_text("\n".join(fragment) + "\n", encoding="utf-8")
+        print(f"\n  YAML fragment: {root/'tuned_values.yaml'}")
+
+        if args.apply:
+            applied, skipped = apply_to_config(args.config, best)
+            print(f"\n  APPLIED to {args.config}  ({len(applied)} value(s) written)")
+            for line in applied:
+                print(f"    {line}")
+            for line in skipped:
+                print(f"    SKIPPED {line}")
+            print(f"    backup: {args.config}.bak")
+            print("\n  The experiments below will now use these values. Remember to copy")
+            print("  the edited config back to Drive -- a Colab checkout is not persistent.")
+        else:
+            print("\n  Re-run with --apply to write these into the config automatically.")
     print(f"\n  {len(rows)-len(ok)} failed, {len(ok)} ok, {(time.perf_counter()-started)/60:.1f} min")
     print(f"  results: {root}")
     return 0
