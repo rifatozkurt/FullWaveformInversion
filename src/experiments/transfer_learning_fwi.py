@@ -23,6 +23,30 @@ from src.experiments.base import (
 )
 
 
+
+def set_optimization_model_mode(model, mode):
+    """
+    Whether the network runs in train() or eval() mode during the inversion.
+
+    This matters more than it looks. FWI optimizes ONE case, so every forward
+    pass sees a batch of exactly one image. In train() mode BatchNorm then
+    normalizes each channel by that single image's own spatial statistics --
+    which is InstanceNorm, not the population statistics estimated from batches
+    of 80 during pretraining. The network is therefore evaluated under a
+    different normalization than it was fitted with.
+
+    "train" reproduces legacy/TransferLearningFWI.py exactly and is the default.
+    "eval" uses the stored running statistics, matching how transfer_segformer_fwi
+    has always been run (`optimization_model_mode: eval`). Autograd is unaffected
+    either way, so the weights still train in both modes.
+    """
+    if mode == "train":
+        model.train()
+    elif mode == "eval":
+        model.eval()
+    else:
+        raise ValueError("optimization_model_mode must be train or eval")
+
 class TransferLearningFWI:
     name = "transfer_learning_fwi"
 
@@ -69,11 +93,13 @@ class TransferLearningFWI:
         forwardSolver = create_forward_solver(params, device)
         inputData = normalize_input_data(initialGradient, self.config).to(device)
 
+        optimization_model_mode = str(cfg.get("optimization_model_mode", "train"))
         gammaPred = torch.ones(
             (1, 1, params["Nx"] + 3, params["Ny"] + 3),
             device=device,
             dtype=torch.float32,
         )
+        set_optimization_model_mode(model, optimization_model_mode)
         gammaPred[:, :, 1:-1, 1:-1] = model(inputData)
 
         epochs = int(cfg["epochs"])
@@ -97,7 +123,7 @@ class TransferLearningFWI:
         start = time.perf_counter()
         for epoch in range(epochs):
             optimizer.zero_grad(set_to_none=True)
-            model.train()
+            set_optimization_model_mode(model, optimization_model_mode)
 
             gammaPred = torch.ones(
                 (1, 1, params["Nx"] + 3, params["Ny"] + 3),
@@ -172,6 +198,7 @@ class TransferLearningFWI:
             gamma,
             epochs,
             Path(run_dir) / "figures" / f"{self.name}_case{case_id}_figure.svg",
+            mse_history=mseHistory,
         )
         save_histories(
             run_dir,

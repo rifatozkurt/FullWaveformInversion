@@ -46,17 +46,19 @@ from src.reporting import plot_metric_bars, write_csv
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Brackets around the values already measured, rather than a fresh wide grid:
-# orders-of-magnitude separation between convergence and divergence is already
-# established, so only the local ordering is in question.
+# Five points per method, half-decade spacing, bracketing the value currently in
+# the config on BOTH sides. The earlier three-point version could only confirm a
+# local ordering; with five it can show a genuine interior optimum, or reveal
+# that the optimum still lies outside the bracket (which is how MPE-FWI's 3e-2
+# was missed the first time, when the grid stopped at 1e-2).
 DEFAULT_GRID = {
-    "inr_siren_fwi": ("lr", [1e-4, 3e-4, 1e-3]),
-    "inr_lr_fwi": ("lr", [1e-4, 3e-4, 1e-3]),
-    "inr_mpe_fwi": ("lr", [1e-2, 3e-2, 1e-1]),
-    "inr_ig_fwi": ("lr_grid", [1e-2, 3e-2, 1e-1]),
-    "inr_siren_centered_fwi": ("lr_bias", [0.1, 1.0, 3.0]),
-    "inr_mpe_centered_fwi": ("lr_bias", [0.1, 1.0, 3.0]),
-    "inr_ig_centered_fwi": ("lr_bias", [0.1, 1.0, 3.0]),
+    "inr_siren_fwi": ("lr", [3e-5, 1e-4, 3e-4, 1e-3, 3e-3]),
+    "inr_lr_fwi": ("lr", [3e-5, 1e-4, 3e-4, 1e-3, 3e-3]),
+    "inr_mpe_fwi": ("lr", [3e-3, 1e-2, 3e-2, 1e-1, 3e-1]),
+    "inr_ig_fwi": ("lr_grid", [3e-3, 1e-2, 3e-2, 1e-1, 3e-1]),
+    "inr_siren_centered_fwi": ("lr_bias", [0.03, 0.1, 0.3, 1.0, 3.0]),
+    "inr_mpe_centered_fwi": ("lr_bias", [0.03, 0.1, 0.3, 1.0, 3.0]),
+    "inr_ig_centered_fwi": ("lr_bias", [0.03, 0.1, 0.3, 1.0, 3.0]),
 }
 
 WORKER = r'''
@@ -149,12 +151,17 @@ def main():
     parser.add_argument("--config", default="configs/config_final.yaml")
     parser.add_argument("--methods", default=",".join(DEFAULT_GRID),
                         help="Comma-separated subset of the tunable methods.")
-    parser.add_argument("--case", type=int, default=None,
-                        help="Tuning case. Default: the config case with the median "
-                             "void fraction, which is more representative than the first.")
+    parser.add_argument("--cases", default=None,
+                        help="Comma-separated case ids. Default: --n-cases spread across "
+                             "the void-fraction distribution of the config's eval cases.")
+    parser.add_argument("--n-cases", type=int, default=2,
+                        help="How many cases to tune on when --cases is not given. "
+                             "One case is not enough: reconstruction quality varies "
+                             "several-fold between specimens, so a single-case ranking "
+                             "can be an artefact of that specimen.")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--run-dir", default=None)
-    parser.add_argument("--epochs", type=int, default=5,
+    parser.add_argument("--epochs", type=int, default=15,
                         help="Short by design: enough to rank rates and catch divergence.")
     parser.add_argument("--apply", action="store_true",
                         help="Write the winning values straight into --config, in place, "
@@ -170,10 +177,12 @@ def main():
     if unknown:
         raise SystemExit(f"not tunable here: {unknown}\navailable: {sorted(DEFAULT_GRID)}")
 
-    # Pick a representative case rather than the first one: void fractions vary
-    # ~20x across eval cases, and the low ones leave almost nothing to improve on.
-    if args.case is not None:
-        case_id = args.case
+    # Pick representative cases rather than the first: void fractions vary ~20x
+    # across the eval set, and the low ones leave almost nothing to improve on.
+    # Several cases are used because a rate that wins on one specimen can lose on
+    # another by a larger margin than it wins by.
+    if args.cases:
+        case_ids = [int(c) for c in args.cases.split(",") if c.strip()]
     else:
         candidates = []
         for cid in config["experiments"]["cases"]:
@@ -184,22 +193,33 @@ def main():
         if not candidates:
             raise SystemExit(f"no case files found in {data_dir}")
         candidates.sort()
-        case_id = candidates[len(candidates) // 2][1]
+        n = max(1, min(int(args.n_cases), len(candidates)))
+        # evenly spaced ranks, avoiding the extremes of the void-fraction range
+        picks = [candidates[int(round((i + 1) * (len(candidates) - 1) / (n + 1)))]
+                 for i in range(n)]
+        case_ids = [cid for _, cid in picks]
 
-    target = np.asarray(load_hdf(data_dir / f"material{case_id}.h5"), dtype=np.float64)
-    trivial = float(((1.0 - target) ** 2).mean())
-    trials = [(m, *DEFAULT_GRID[m][:1], v) for m in methods for v in DEFAULT_GRID[m][1]]
+    trivial_by_case = {}
+    for cid in case_ids:
+        target = np.asarray(load_hdf(data_dir / f"material{cid}.h5"), dtype=np.float64)
+        trivial_by_case[cid] = float(((1.0 - target) ** 2).mean())
+
+    trials = [(m, *DEFAULT_GRID[m][:1], v, c)
+              for m in methods for v in DEFAULT_GRID[m][1] for c in case_ids]
 
     print("=" * 78)
-    print(f"  tuning case   : {case_id}  (void fraction {float((target<0.5).mean())*100:.2f}%)")
-    print(f"  trivial MSE   : {trivial:.4e}   <- a rate only 'works' well below this")
+    print(f"  tuning cases  : {case_ids}")
+    for cid in case_ids:
+        tgt = np.asarray(load_hdf(data_dir / f"material{cid}.h5"), dtype=np.float64)
+        print(f"     case {cid}: void {float((tgt<0.5).mean())*100:5.2f}%   "
+              f"trivial {trivial_by_case[cid]:.4e}")
     print(f"  data          : {data_dir}")
     print(f"  epochs/trial  : {args.epochs}")
     print(f"  trials        : {len(trials)}")
     print("=" * 78, flush=True)
     if args.dry_run:
-        for method, key, value in trials:
-            print(f"  {method:<26} {key}={value:g}")
+        for method, key, value, cid in trials:
+            print(f"  {method:<26} {key}={value:g}  case {cid}")
         return 0
 
     worker_path = root / "_worker.py"
@@ -208,11 +228,12 @@ def main():
     rows, started = [], time.perf_counter()
     print(f"{'method':<26}{'setting':<18}{'best mse':>12}{'vs trivial':>12}", flush=True)
     print("-" * 72, flush=True)
-    for index, (method, key, value) in enumerate(trials):
+    for index, (method, key, value, case_id) in enumerate(trials):
+        trivial = trivial_by_case[case_id]
         cmd = [sys.executable, str(worker_path), "--config", args.config,
                "--method", method, "--case", str(case_id), "--epochs", str(args.epochs),
                "--data-dir", str(data_dir), "--key", key, "--value", repr(value),
-               "--run-dir", str(root / "trials" / f"{method}_{key}{value:g}")]
+               "--run-dir", str(root / "trials" / f"{method}_{key}{value:g}_case{case_id}")]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
             line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
@@ -221,6 +242,7 @@ def main():
                 "error": (proc.stderr.strip().splitlines() or ["no RESULT line"])[-1][:200]}
         except subprocess.TimeoutExpired:
             rec = {"method": method, "key": key, "value": value, "error": "timeout"}
+        rec["case"] = case_id
         rec["trivial_mse"] = trivial
         if "error" not in rec:
             rec["vs_trivial"] = rec["mse_best"] / max(trivial, 1e-30)
@@ -229,26 +251,45 @@ def main():
         if "error" in rec:
             print(f"{method:<26}{key+'='+format(value,'g'):<18}  ERROR {rec['error'][:40]}", flush=True)
         else:
-            print(f"{method:<26}{key+'='+format(value,'g'):<18}"
+            print(f"{method:<26}{key+'='+format(value,'g'):<12}c{case_id:<6}"
                   f"{rec['mse_best']:>12.4e}{rec['vs_trivial']:>11.3f}x", flush=True)
 
     ok = [r for r in rows if "error" not in r]
     if ok:
-        plot_metric_bars(root / "tuning_vs_trivial.png", ok, "method",
-                         [("vs_trivial", "best gamma MSE / trivial (lower better)")])
-        best = {}
+        pass  # bar plot drawn below, from the case-averaged rows
+        # Average vs_trivial over the cases before ranking. Absolute errors are
+        # not comparable between specimens (the trivial baseline scales with void
+        # fraction), so the ratio is what can be averaged.
+        grouped = {}
         for row in ok:
+            grouped.setdefault((row["method"], row["key"], row["value"]), []).append(row)
+        averaged = []
+        for (method, key, value), rs in grouped.items():
+            averaged.append({
+                "method": method, "key": key, "value": value,
+                "n_cases": len(rs),
+                "cases": ";".join(str(r["case"]) for r in rs),
+                "vs_trivial": float(np.mean([r["vs_trivial"] for r in rs])),
+                "vs_trivial_worst": float(np.max([r["vs_trivial"] for r in rs])),
+                "mse_best": float(np.mean([r["mse_best"] for r in rs])),
+            })
+        write_csv(root / "tuning_results_averaged.csv", averaged)
+        best = {}
+        for row in averaged:
             key = row["method"]
-            if key not in best or row["mse_best"] < best[key]["mse_best"]:
+            if key not in best or row["vs_trivial"] < best[key]["vs_trivial"]:
                 best[key] = row
         write_csv(root / "best_per_method.csv", list(best.values()))
+        plot_metric_bars(root / "tuning_vs_trivial.png", averaged, "method",
+                         [("vs_trivial", "mean gamma MSE / trivial over cases (lower better)")])
         print("\n" + "=" * 78)
         print("  BEST PER METHOD")
         print("-" * 78)
         for method, row in best.items():
             flag = "" if row["vs_trivial"] < 0.99 else "   <-- NOT usable (>= trivial)"
             print(f"  {method:<28} {row['key']}: {row['value']:g}"
-                  f"      ({row['vs_trivial']:.3f}x trivial){flag}")
+                  f"      (mean {row['vs_trivial']:.3f}x, worst "
+                  f"{row['vs_trivial_worst']:.3f}x over {row['n_cases']} cases){flag}")
         print("=" * 78)
         print("  A value at or above 1.0x has not reconstructed anything at this")
         print("  epoch budget -- treat it as 'no usable rate found', not as a winner.")

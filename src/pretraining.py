@@ -1,4 +1,5 @@
 import csv
+import copy
 import random
 import time
 from pathlib import Path
@@ -125,6 +126,14 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         if len(idx_numberOfSamples) != numberOfSamples:
             raise ValueError("pretraining.sample_ids must contain at least numberOfSamples entries")
     else:
+        # Seeded so a standalone pretraining run is reproducible. Previously this
+        # drew from Python's unseeded global RNG, so two runs of the same command
+        # trained on different 80/20 splits -- which is where the ~6.5% spread
+        # between nominally identical runs came from. `torch.manual_seed` below
+        # does not cover this: it is called later and seeds a different RNG.
+        # (The comparative runner is unaffected either way; it passes an explicit
+        # `sample_ids` list built from its own seeded master ordering.)
+        random.seed(int(cfg.get("sample_seed", cfg["seed"])))
         idx_numberOfSamples = random.sample(range(int(cfg["availableSamples"])), numberOfSamples)
 
     print(f"Loading {numberOfSamples} pretraining sample(s) from {destinationFolder}", flush=True)
@@ -236,9 +245,36 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
     epochs = int(cfg["epochs"])
     clipGrad = cfg["clipGrad"]
 
+    # `lr_schedule` selects between the inherited behaviour and the one the
+    # inherited code appears to have intended:
+    #   "constant"   - reproduces legacy/Pretraining.py exactly. That script sets
+    #                  beta = 0.2, builds the lambda, then resets beta to 0
+    #                  BEFORE the first scheduler.step(). Because the lambda
+    #                  closes over `beta` and Python closures are late-binding,
+    #                  the decay factor is (0 * epoch + 1) ** alpha = 1 forever,
+    #                  so the configured beta never takes effect.
+    #   "polynomial" - honours the configured beta, giving the (beta*e+1)**alpha
+    #                  decay the constants were evidently chosen for.
+    lr_schedule = str(cfg.get("lr_schedule", "constant"))
+    if lr_schedule not in ("constant", "polynomial"):
+        raise ValueError("pretraining.lr_schedule must be constant or polynomial")
+    schedule_beta = 0.0 if lr_schedule == "constant" else float(beta)
+
     optimizer = torch.optim.RMSprop(model.parameters(), lr)
-    lr_lambda = lambda epoch: (beta * epoch + 1) ** alpha
+    lr_lambda = lambda epoch: (schedule_beta * epoch + 1) ** alpha
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # Checkpoint selection. "final_epoch" reproduces the inherited behaviour
+    # (save whatever the last epoch produced, no comparison). "val_loss" keeps
+    # the epoch with the lowest validation loss, which is what the SegFormer has
+    # always done -- without this the two families are selected by different
+    # rules and the comparison is not like-for-like.
+    checkpoint_selection = str(cfg.get("checkpoint_selection", "final_epoch"))
+    if checkpoint_selection not in ("final_epoch", "val_loss"):
+        raise ValueError("pretraining.checkpoint_selection must be final_epoch or val_loss")
+    best_validation_cost = float("inf")
+    best_validation_epoch = -1
+    best_model_state = None
 
     trainingCostHistory = np.zeros(epochs)
     trainingMSEHistory = np.zeros(epochs)
@@ -338,6 +374,11 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         validationGammaMSEHistory[epoch] = (
             validation_gamma_mse_sum / max(1, validation_samples)
         )
+        if validationCostHistory[epoch] < best_validation_cost:
+            best_validation_cost = float(validationCostHistory[epoch])
+            best_validation_epoch = epoch
+            if checkpoint_selection == "val_loss":
+                best_model_state = copy.deepcopy(model.state_dict())
         metric_eps = 1e-8
         validationDiceHistory[epoch] = (
             2.0 * validation_tp
@@ -366,6 +407,14 @@ def pretrain_unet(config, data_dir=None, output_dir=None, progress_callback=None
         "model_" + model_type + "_" + str(epochs) + "_" + trainingType + "_"
         + str(numberOfSamples) + "_channel_" + str(len(NNchannels))
     )
+    if checkpoint_selection == "val_loss" and best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(
+            "Selected epoch {}/{} by validation loss ({:.6E})".format(
+                best_validation_epoch + 1, epochs, best_validation_cost
+            ),
+            flush=True,
+        )
     torch.save(model.state_dict(), path)
     if run_dir is not None:
         output_paths = _save_pretraining_outputs(

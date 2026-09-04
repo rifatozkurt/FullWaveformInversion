@@ -15,7 +15,12 @@ legacy/
 notes/
 runs/
 temp/
-
+fwi_thesis_old/
+models/final_old/
+models/comparative/
+models/improve_transformer/
+models/improve_transformer_256batch/
+models/pretrained/
 # Local diagnostic files and implementation notes
 test_coordinate_wiring.py
 IMPLEMENTATION_LOG_INR_FIXES.md

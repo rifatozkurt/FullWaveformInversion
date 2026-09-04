@@ -131,6 +131,7 @@ class NNBasedFWI:
             gamma,
             epochs,
             Path(run_dir) / "figures" / f"{self.name}_case{case_id}_figure.svg",
+            mse_history=mseHistory,
         )
         save_histories(
             run_dir,

@@ -238,7 +238,7 @@ def save_outputs(run_dir, method_name, case_id, final_gamma, target_gamma):
     )
 
 
-def plot_reconstruction_history(history_gamma, gamma, epochs, path):
+def plot_reconstruction_history(history_gamma, gamma, epochs, path, mse_history=None):
     path = Path(path)
     io.ensure_dir(path.parent)
     target_gamma = gamma[0, 0, 1:-1, 1:-1].detach().cpu().numpy()
@@ -250,9 +250,20 @@ def plot_reconstruction_history(history_gamma, gamma, epochs, path):
             return frame[1:-1, 1:-1]
         return frame
 
+    # The FWI cost is not monotone, so the last iterate is often not the best
+    # reconstruction. When `mse_history` is supplied, the lowest-error iterate is
+    # shown next to the final one, which is the honest way to present a
+    # trajectory that overshoots and comes back.
+    best_index = None
+    if mse_history is not None and len(mse_history):
+        finite = np.asarray(mse_history, dtype=float)
+        if np.isfinite(finite).any():
+            best_index = int(np.nanargmin(np.where(np.isfinite(finite), finite, np.inf)))
+
     fig, axes = plt.subplots(3, 3, figsize=(11, 8), constrained_layout=True)
     axes = axes.ravel()
-    sample_count = len(axes) - 2
+    reserved = 3 if best_index is not None else 2
+    sample_count = len(axes) - reserved
     indices = np.linspace(0, max(len(history_gamma) - 1, 0), sample_count, dtype=int)
 
     image = None
@@ -264,6 +275,15 @@ def plot_reconstruction_history(history_gamma, gamma, epochs, path):
         )
         axis.set_title(f"epoch {history_index}", fontsize=10)
         axis.axis("off")
+
+    if best_index is not None:
+        # mse_history[i] is the error AFTER update i, i.e. gamma_history[i + 1].
+        frame = min(best_index + 1, len(history_gamma) - 1)
+        image = axes[-3].imshow(np.transpose(physical_frame(history_gamma[frame])), vmin=0, vmax=1)
+        axes[-3].set_title(
+            f"best (epoch {best_index + 1}, {mse_history[best_index]:.2e})", fontsize=9
+        )
+        axes[-3].axis("off")
 
     image = axes[-2].imshow(np.transpose(physical_frame(history_gamma[-1])), vmin=0, vmax=1)
     axes[-2].set_title("final", fontsize=10)

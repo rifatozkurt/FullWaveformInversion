@@ -401,6 +401,7 @@ class TransferSegFormerFWI:
             gamma,
             completed_epochs,
             Path(run_dir) / "figures" / f"{self.name}_case{case_id}_figure.svg",
+            mse_history=mse_history,
         )
         save_histories(
             run_dir,

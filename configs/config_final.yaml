@@ -50,10 +50,11 @@ comparative_pretraining:
   # 100 dropped: too few samples to say anything about scaling.
   sample_counts: [250, 500, 1000, 5000, 10000, 15000]
   available_samples: 15000
-  # segformer_imagenet is pretrained at 15000 only -- it answers a different
-  # question (does out-of-domain pretraining substitute for in-domain data)
-  # rather than a scaling question.
-  models: [unet, segformer]
+  # All three arms across the full sweep, so the ImageNet question can be asked
+  # at every data budget rather than only at the largest one. The interesting
+  # case is small n: if out-of-domain pretraining substitutes for in-domain
+  # data, the gap should be widest where in-domain data is scarcest.
+  models: [unet, segformer, segformer_imagenet]
   seed: 30
   # Keep checkpoints where the downstream experiment path resolver expects
   # them. The runner refuses accidental overwrite unless --overwrite is used.
@@ -174,6 +175,17 @@ pretraining:
   lr: 5.0e-04
   alpha: -0.5
   beta: 0.2
+  # Honour the configured beta. The inherited script builds the scheduler lambda
+  # and then resets beta to 0 before the first step, so its decay never fires and
+  # the rate stays at 5e-4 for all 100 epochs. "constant" reproduces that exactly;
+  # "polynomial" applies (beta*e+1)**alpha, decaying to ~22% of the initial rate
+  # by epoch 100 -- gentle, and it removes the asymmetry with the SegFormer, whose
+  # cosine schedule is what makes its curves look smoother.
+  lr_schedule: polynomial
+  # Keep the lowest-validation-loss epoch rather than whatever the last one
+  # produced. Matches the SegFormer, so both families are selected alike.
+  checkpoint_selection: val_loss
+  sample_seed: 30
   epochs: 100
   clipGrad: 5.0e-04
   l2: 1.0e-06
@@ -204,9 +216,16 @@ segformer_pretraining:
   void_gamma_threshold: 0.5
   eval_threshold: 0.5
   void_prior: 0.01
-  checkpoint_selection: dice_score
+  # val_loss, not dice_score: the objective is MSE on the continuous field, so
+  # selecting on Dice meant training against one criterion and selecting on
+  # another. It also matches the U-Net's rule above.
+  checkpoint_selection: val_loss
   minimum_epochs: 30
-  early_stopping_patience: 15
+  # Disabled so every SegFormer runs the full 100 epochs and the comparative
+  # curves have the same length as the U-Net's. Set to a positive integer to
+  # re-enable. Note the U-Net has no early stopping either, so this also removes
+  # an asymmetry between the two families.
+  early_stopping_patience: none
   print_every_batches: 100
   gradient_normalization:
     mode: robust_abs
@@ -234,7 +253,6 @@ experiments:
     lr: 8.0e-02
     alpha: 0.0
     beta: 0.0
-    weightLrFactor: 1
     clipGrad: 1.0e-05
     epochs: 35
     costScaling: 1.0e+12
@@ -245,7 +263,6 @@ experiments:
     lr: 5.0e-02
     alpha: 0.0
     beta: 0.0
-    weightLrFactor: 1
     clipGrad: 1.0e-05
     epochs: 35
     costScaling: 1.0e+12
@@ -457,6 +474,12 @@ experiments:
     costScaling: 1.0e+11
 
   transfer_learning_fwi:
+    # Same mode as transfer_segformer_fwi. FWI inverts one specimen, so every
+    # forward pass is a batch of one; in train() mode BatchNorm then normalises by
+    # that single image instead of the statistics learned from batches of 80.
+    # Measured over 7 checkpoints x 60 held-out specimens, eval() improves the
+    # initial guess by 1.32x (7/7). "train" reproduces legacy/TransferLearningFWI.py.
+    optimization_model_mode: eval
     seed: 99
     lr: 5.0e-04
     alpha: -0.5
@@ -468,6 +491,10 @@ experiments:
     costScaling: 1.0e+10
 
   transfer_learning_fwi_frozen_encoder:
+    optimization_model_mode: eval
+    # Was absent, so the freeze ablation kept its final iterate while the other two
+    # transfer experiments restored their best. Same rule everywhere now.
+    restore_best_observed: true
     seed: 99
     # encoder | decoder | random_encoder | none
     #   encoder        : freeze down path + bottleneck (the usual advice)
