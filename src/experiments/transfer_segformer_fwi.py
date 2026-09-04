@@ -22,7 +22,10 @@ from src.experiments.base import (
     save_outputs,
     simulation_parameters,
 )
-from src.pretrain_segformer import load_segformer_checkpoint
+from src.pretrain_segformer import (
+    load_segformer_checkpoint,
+    parse_early_stopping_patience,
+)
 
 
 def set_segformer_trainable_mode(model, mode):
@@ -226,9 +229,10 @@ class TransferSegFormerFWI:
         optimization_model_mode = cfg.get("optimization_model_mode", "train")
         record_post_step = bool(cfg.get("record_post_step", False))
         restore_best_observed = bool(cfg.get("restore_best_observed", False))
-        early_stopping_patience = cfg.get("early_stopping_patience")
-        early_stopping_patience = (
-            None if early_stopping_patience is None else int(early_stopping_patience)
+        # Parser, not int(): "none"/"off"/"disabled" are valid ways to switch
+        # early stopping off in a config, and int() throws on them.
+        early_stopping_patience = parse_early_stopping_patience(
+            cfg.get("early_stopping_patience")
         )
         best_observed_cost = float("inf")
         best_observed_epoch = -1

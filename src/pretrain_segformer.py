@@ -518,9 +518,12 @@ def pretrain_segformer(
         raise ValueError(
             "segformer_pretraining.checkpoint_selection must be val_loss or dice_score"
         )
-    early_stopping_patience = cfg.get("early_stopping_patience")
-    early_stopping_patience = (
-        None if early_stopping_patience is None else int(early_stopping_patience)
+    # Go through the parser, not int(): the config may legitimately say
+    # "none"/"off"/"disabled" to turn early stopping off, and a bare int() throws
+    # on those. The command-line overrides above already used the parser; this
+    # read did not, so a disabled setting written in the config crashed here.
+    early_stopping_patience = parse_early_stopping_patience(
+        cfg.get("early_stopping_patience")
     )
     minimum_epochs = int(cfg.get("minimum_epochs", 1))
     selection_epochs_without_improvement = 0

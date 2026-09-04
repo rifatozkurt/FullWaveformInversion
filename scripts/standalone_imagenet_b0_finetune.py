@@ -433,9 +433,9 @@ def main():
     checkpoint_selection = str(cfg.get("checkpoint_selection", "val_loss"))
     if checkpoint_selection not in best_metrics:
         raise ValueError("checkpoint_selection must be val_loss or dice_score")
-    early_stopping_patience = cfg.get("early_stopping_patience")
-    early_stopping_patience = (
-        None if early_stopping_patience is None else int(early_stopping_patience)
+    # Parser, not int(): the config may say "none" to disable early stopping.
+    early_stopping_patience = parse_early_stopping_patience(
+        cfg.get("early_stopping_patience")
     )
     minimum_epochs = int(cfg.get("minimum_epochs", 1))
     epochs_without_improvement = 0
